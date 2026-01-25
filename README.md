@@ -1,15 +1,11 @@
-# server_rs
+# httprs
 
-`server_rs` is a lightweight HTTP server written in Rust that demonstrates a **Prefork Multi‑Process Model** similar to the classic Apache MPM Prefork.
+`httprs` is a lightweight HTTP server written in Rust that demonstrates a **Prefork Multi‑Process Model** similar to the classic Apache httpd MPM Prefork.
 It spawns a configurable number of worker processes that listen on a single TCP port and accept connections concurrently.
-The worker processes communicate with the parent via `fork` and `wait` system calls, handling each connection independently.
 
 ## Features
 
 - **Prefork**: Spawns multiple worker processes at start‑up, each with its own event loop.
-- **Signal Handling**: Gracefully terminates all workers on `SIGINT`.
-- **Reusable Socket**: Uses `SO_REUSEADDR` and `SO_REUSEPORT` to allow workers to bind to the same port.
-- **Timeouts**: Configurable `RECEIVE_TIMEOUT` to prevent workers from blocking indefinitely.
 - **Extensible Architecture**:
   - `Worker` trait lets you plug in different worker types (TCP, UDP, TLS, etc.).
   - `Process` trait allows you to implement any protocol (HTTP, Echo, WebSocket, etc.).
@@ -18,7 +14,7 @@ The worker processes communicate with the parent via `fork` and `wait` system ca
 ## Project Layout
 
 ```
-server_rs/
+httprs/
 ├── src/
 │   ├── args.rs              # CLI arguments
 │   ├── main.rs              # Application entry point
@@ -55,7 +51,7 @@ cargo build --release
 Run
 
 ```sh
-./target/release/server_rs \
+./target/release/httprs \
   --host 127.0.0.1 \
   --port 8080 \
   --worker 4 \
@@ -63,7 +59,7 @@ Run
   --max-header-size 8192
 ```
 
-This command starts a server listening on `127.0.0.1:8080` with 4 preforked worker processes and a 2‑second accept timeout.
+This command starts a HTTP server listening on `127.0.0.1:8080` with 4 preforked worker processes and a 2‑second accept timeout.
 
 ## Extending the Server
 
