@@ -66,3 +66,9 @@ impl<'a> HttpRequest<'a> {
         return &self.reader;
     }
 }
+
+impl Read for HttpRequest<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf)
+    }
+}

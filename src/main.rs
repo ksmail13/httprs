@@ -46,9 +46,9 @@ impl Handler for SimpleHandler {
 
         let mut body = String::new();
         match &req.read_to_string(&mut body) {
-            Ok(usize) => {
+            Ok(readed) => {
                 let mut size: usize = 0;
-                usize.clone_into(&mut size);
+                readed.clone_into(&mut size);
                 res.set_header(&content_length(size));
                 let _ = res.write_all(body.as_bytes());
             }
