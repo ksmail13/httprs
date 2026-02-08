@@ -5,6 +5,8 @@ use std::{
     time::SystemTime,
 };
 
+use flate2::{Compression, write::GzEncoder};
+
 use crate::http::{
     header::{HttpHeader, content_length, date},
     request::HttpRequest,
@@ -75,9 +77,16 @@ impl<'a> Write for HttpResponse<'a> {
         }
 
         let data: Vec<IoSlice<'_>> = self.buffer.iter().map(|b| IoSlice::new(&b)).collect();
-        let body_written = self.writer.write_vectored(&data)?;
 
-        self.writer.flush()?;
+        let mut writer: Box<dyn Write> = match self.header.get("Content-Encoding") {
+            Some(v) if *v.to_string() == "gzip" => {
+                Box::new(GzEncoder::new(&mut self.writer, Compression::default()))
+            }
+            _ => Box::new(&mut self.writer),
+        };
+        let body_written = writer.write_vectored(&data)?;
+
+        writer.flush()?;
         self.written = header_written + body_written;
         Ok(())
     }
@@ -144,5 +153,126 @@ impl HttpResponse<'_> {
         written += self.writer.write(LINE_END)?;
 
         return Ok(written);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::header::HttpHeaderValue;
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    #[test]
+    fn test_gzip_encoding_and_decoding() {
+        // 테스트용 버퍼 생성
+        let mut output_buffer = Vec::new();
+
+        // HttpResponse 생성 및 사용 (별도 스코프로 분리)
+        {
+            let mut response =
+                HttpResponse::new(HttpVersion::default(), Box::new(&mut output_buffer));
+
+            // Content-Encoding 헤더를 gzip으로 설정
+            response.set_header(&crate::http::header::content_encoding(
+                HttpHeaderValue::Str("gzip"),
+            ));
+
+            // 테스트 데이터 작성
+            let test_data = b"Hello, this is a test message for gzip encoding!";
+            response.write(test_data).unwrap();
+
+            // flush를 호출하여 실제로 gzip 인코딩 수행
+            response.flush().unwrap();
+        } // response가 여기서 drop되어 output_buffer의 mutable borrow가 해제됨
+
+        // 출력 버퍼에서 헤더와 바디 분리
+        let output_str = String::from_utf8_lossy(&output_buffer);
+        let parts: Vec<&str> = output_str.split("\r\n\r\n").collect();
+
+        // 헤더 부분 확인
+        assert!(parts[0].contains("Content-Encoding: gzip"));
+
+        // 바디 부분 (gzip으로 인코딩된 데이터) 추출
+        let body_start = parts[0].len() + 4; // "\r\n\r\n"의 길이
+        let compressed_body = &output_buffer[body_start..];
+
+        // gzip 디코딩
+        let mut decoder = GzDecoder::new(compressed_body);
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+
+        // 디코딩된 데이터가 원본과 일치하는지 확인
+        let expected = b"Hello, this is a test message for gzip encoding!";
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn test_no_gzip_encoding() {
+        // gzip 없이 일반 응답 테스트
+        let mut output_buffer = Vec::new();
+
+        {
+            let mut response =
+                HttpResponse::new(HttpVersion::default(), Box::new(&mut output_buffer));
+
+            let test_data = b"Hello, this is a plain text message!";
+            response.write(test_data).unwrap();
+            response.flush().unwrap();
+        } // response drop
+
+        // 출력 버퍼에서 헤더와 바디 분리
+        let output_str = String::from_utf8_lossy(&output_buffer);
+        let parts: Vec<&str> = output_str.split("\r\n\r\n").collect();
+
+        // Content-Encoding 헤더가 없어야 함
+        assert!(!parts[0].contains("Content-Encoding"));
+
+        // 바디가 그대로 있어야 함
+        let body_start = parts[0].len() + 4;
+        let body = &output_buffer[body_start..];
+
+        assert_eq!(body, b"Hello, this is a plain text message!");
+    }
+
+    #[test]
+    fn test_gzip_with_large_data() {
+        // 큰 데이터로 gzip 압축 효율성 테스트
+        let mut output_buffer = Vec::new();
+        let test_data = "This is a repeating message! ".repeat(100);
+
+        {
+            let mut response =
+                HttpResponse::new(HttpVersion::default(), Box::new(&mut output_buffer));
+
+            response.set_header(&crate::http::header::content_encoding(
+                HttpHeaderValue::Str("gzip"),
+            ));
+
+            // 반복되는 큰 데이터 (압축이 잘 될 것으로 예상)
+            response.write(test_data.as_bytes()).unwrap();
+            response.flush().unwrap();
+        } // response drop
+
+        // 압축된 크기가 원본보다 작은지 확인
+        let output_str = String::from_utf8_lossy(&output_buffer);
+        let parts: Vec<&str> = output_str.split("\r\n\r\n").collect();
+        let body_start = parts[0].len() + 4;
+        let compressed_size = output_buffer.len() - body_start;
+
+        println!(
+            "Original size: {}, Compressed size: {}",
+            test_data.len(),
+            compressed_size
+        );
+        assert!(compressed_size < test_data.len());
+
+        // 디코딩하여 원본과 일치하는지 확인
+        let compressed_body = &output_buffer[body_start..];
+        let mut decoder = GzDecoder::new(compressed_body);
+        let mut decoded = String::new();
+        decoder.read_to_string(&mut decoded).unwrap();
+
+        assert_eq!(decoded, test_data);
     }
 }

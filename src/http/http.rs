@@ -1,3 +1,4 @@
+use flate2::read::GzDecoder;
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
@@ -139,10 +140,10 @@ where
     fn init_request<'a>(
         &self,
         client_addr: &'a std::net::SocketAddr,
-        header: &'a Vec<String>,
+        raw_header: &'a Vec<String>,
         reader: Box<dyn Read + 'a>,
     ) -> Result<HttpRequest<'a>, Error> {
-        let buf = &header[0];
+        let buf = &raw_header[0];
 
         let mut req_line = buf.split(" ");
 
@@ -158,14 +159,26 @@ where
 
         let (path, param) = parse_url(path_query);
 
+        let header = self.init_header(raw_header);
+        let content_encoding = *header
+            .get("Content-Encoding")
+            .map_or(None, |v| v.first())
+            .unwrap_or(&"");
+
+        let body_reader = if content_encoding == "gzip" {
+            Box::new(GzDecoder::new(reader))
+        } else {
+            reader
+        };
+
         return Ok(HttpRequest::new(
             client_addr,
             HttpMethod::parse(method),
             version,
             path,
-            self.init_header(&header),
+            header,
             param,
-            reader,
+            body_reader,
         ));
     }
 

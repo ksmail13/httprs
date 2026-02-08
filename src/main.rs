@@ -55,7 +55,14 @@ impl Handler for SimpleHandler {
             Err(err) => {
                 res.set_response_code(HttpResponseCode::InternalServerError);
                 log::error!("read body error / {}", err);
-                log::error!("readed {body}");
+                log::error!(
+                    "readed {:?}, {body}",
+                    req.header()
+                        .get("Content-Length")
+                        .unwrap_or(&vec!["0"])
+                        .first()
+                        .unwrap()
+                );
             }
         }
     }
