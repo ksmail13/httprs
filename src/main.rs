@@ -1,13 +1,14 @@
 use args::Args;
 use clap::Parser;
 use nix::unistd::getpid;
+use std::cmp::min;
 use std::io::{Read, Write};
 use std::rc::Rc;
 
 use crate::{
     http::{
         handler::Handler,
-        header::{HttpHeaderValue, content_length, content_type},
+        header::{HttpHeaderValue, content_type},
         http::Http1,
         response::HeaderSetter,
         value::HttpResponseCode,
@@ -24,6 +25,8 @@ mod util;
 mod worker;
 
 struct SimpleHandler;
+
+const BUF_SIZE: usize = 1024;
 
 impl Handler for SimpleHandler {
     fn handle(&self, req: &mut http::request::HttpRequest, res: &mut http::response::HttpResponse) {
@@ -44,25 +47,36 @@ impl Handler for SimpleHandler {
             }
         }
 
-        let mut body = String::new();
-        match &req.read_to_string(&mut body) {
-            Ok(readed) => {
-                let mut size: usize = 0;
-                readed.clone_into(&mut size);
-                res.set_header(&content_length(size));
-                let _ = res.write_all(body.as_bytes());
-            }
-            Err(err) => {
-                res.set_response_code(HttpResponseCode::InternalServerError);
-                log::error!("read body error / {}", err);
-                log::error!(
-                    "readed {:?}, {body}",
-                    req.header()
-                        .get("Content-Length")
-                        .unwrap_or(&vec!["0"])
-                        .first()
-                        .unwrap()
-                );
+        let mut req_body_len = req
+            .header()
+            .get("Content-Length")
+            .unwrap_or(&vec!["0"])
+            .first()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+
+        let mut body_buf = [0; BUF_SIZE];
+        while req_body_len > 0 {
+            match &req.read(&mut body_buf[0..min(req_body_len, BUF_SIZE)]) {
+                Ok(readed) => {
+                    let _ = res.write_all(&body_buf[0..*readed]);
+                    req_body_len -= *readed;
+                }
+                Err(err) => {
+                    res.set_response_code(HttpResponseCode::InternalServerError);
+                    log::error!("read body error / {}", err);
+                    log::error!(
+                        "readed {:?}, {:?}",
+                        req.header()
+                            .get("Content-Length")
+                            .unwrap_or(&vec!["0"])
+                            .first()
+                            .unwrap(),
+                        String::from_utf8_lossy(&body_buf)
+                    );
+                    return;
+                }
             }
         }
     }
@@ -70,7 +84,7 @@ impl Handler for SimpleHandler {
 
 fn main() {
     colog::basic_builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Trace)
         .format(|f, record| {
             writeln!(
                 f,
