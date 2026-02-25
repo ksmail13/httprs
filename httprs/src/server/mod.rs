@@ -10,7 +10,7 @@ use nix::sys::{
 
 use crate::{
     process::Process,
-    worker::{group::WorkerGroup, manager::WorkerManager},
+    worker::{group::WorkerGroup, helper::ProcessManager, manager::WorkerManager},
 };
 
 mod worker;
@@ -87,7 +87,7 @@ impl Server {
             })
             .collect();
 
-        let manager = WorkerManager::new(group);
+        let manager = WorkerManager::new(group, ProcessManager {});
         let mut group_list = manager.start();
 
         manager.run(&mut group_list);

@@ -11,28 +11,16 @@ use nix::{
 
 use crate::worker::{error::WaitError, group::WorkerGroup};
 
-pub struct WorkerGenerator;
+pub trait ChildManager {
+    fn make_child(&self, group: &WorkerGroup) -> Result<Pid, Errno>;
+    fn wait(&self) -> Result<Pid, WaitError>;
+    fn kill(&self, pid: Pid) -> Result<Pid, Errno>;
+}
 
-impl WorkerGenerator {
-    pub fn start_group_workers(&self, group: &WorkerGroup) -> Result<Vec<Pid>, &str> {
-        let mut remains = group.count;
-        let threshold = 5;
-        let mut pids = vec![];
-        for _ in 0..threshold {
-            for _ in 0..remains {
-                if let Ok(pid) = self.fork_child(group) {
-                    pids.push(pid);
-                    remains -= 1;
-                }
-            }
-            if remains == 0 {
-                return Ok(pids);
-            }
-        }
-        return Err("Failed run workers");
-    }
+pub struct ProcessManager;
 
-    pub fn fork_child(&self, group: &WorkerGroup) -> Result<Pid, Errno> {
+impl ChildManager for ProcessManager {
+    fn make_child(&self, group: &WorkerGroup) -> Result<Pid, Errno> {
         return match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => Ok(child),
             Ok(ForkResult::Child) => {
@@ -44,11 +32,8 @@ impl WorkerGenerator {
             Err(err) => Err(err),
         };
     }
-}
-pub struct WorkerCleaner;
 
-impl WorkerCleaner {
-    pub fn wait(&self) -> Result<Pid, WaitError> {
+    fn wait(&self) -> Result<Pid, WaitError> {
         let wait_result = wait();
         return match wait_result {
             Ok(WaitStatus::Exited(pid, excode)) => {
@@ -63,7 +48,7 @@ impl WorkerCleaner {
         };
     }
 
-    pub fn kill(&self, pid: Pid) -> Result<Pid, Errno> {
+    fn kill(&self, pid: Pid) -> Result<Pid, Errno> {
         log::trace!(target: "WorkerCleaner.kill", "kill {pid}");
         return kill(pid, Signal::SIGINT).map(|_| pid);
     }

@@ -5,11 +5,7 @@ use nix::{
     unistd::Pid,
 };
 
-use crate::worker::{
-    error::WaitError,
-    group::WorkerGroup,
-    helper::{WorkerCleaner, WorkerGenerator},
-};
+use crate::worker::{error::WaitError, group::WorkerGroup, helper::ChildManager};
 
 static mut RUNNING: bool = true;
 
@@ -17,31 +13,36 @@ extern "C" fn sigint_handler(_: i32) {
     unsafe { RUNNING = false };
 }
 
-pub struct WorkerManager {
+pub struct WorkerManager<T: ChildManager> {
     groups: Vec<WorkerGroup>,
-    cleaner: WorkerCleaner,
-    generator: WorkerGenerator,
+    manager: T,
 }
 
-impl WorkerManager {
-    pub fn new(groups: Vec<WorkerGroup>) -> Self {
+impl<T: ChildManager> WorkerManager<T> {
+    pub fn new(groups: Vec<WorkerGroup>, manager: T) -> Self {
         return Self {
             groups: groups,
-            cleaner: WorkerCleaner,
-            generator: WorkerGenerator,
+            manager: manager,
         };
     }
 
     pub fn start(&self) -> Vec<(&WorkerGroup, Vec<Pid>)> {
         let mut vec = vec![];
         for g in &self.groups {
-            let start_result = self.generator.start_group_workers(&g);
-            match start_result {
-                Err(err) => {
-                    log::error!("start failed: {err}");
+            let mut pids = vec![];
+            let mut remain = g.count;
+            while remain > 0 {
+                match self.manager.make_child(&g) {
+                    Ok(pid) => {
+                        pids.push(pid);
+                        remain -= 1;
+                    }
+                    Err(e) => {
+                        log::error!("fork failed: {e}");
+                    }
                 }
-                Ok(pids) => vec.push((g, pids)),
             }
+            vec.push((g, pids));
         }
 
         return vec;
@@ -60,7 +61,7 @@ impl WorkerManager {
         }
 
         pids.remove(idx.unwrap());
-        return self.generator.fork_child(group).map(|p: Pid| Some(p));
+        return self.manager.make_child(group).map(|p: Pid| Some(p));
     }
 
     pub fn run(&self, vec: &mut Vec<(&WorkerGroup, Vec<Pid>)>) {
@@ -82,7 +83,7 @@ impl WorkerManager {
         }
 
         while unsafe { RUNNING } {
-            match self.cleaner.wait() {
+            match self.manager.wait() {
                 Ok(pid) => {
                     for (g, pids) in &mut *vec {
                         match self.collect_and_fork(g, pids, pid) {
@@ -127,14 +128,14 @@ impl WorkerManager {
         for (_, pids) in vec {
             let pid_len = pids.len();
             for pid in pids {
-                let result = self.cleaner.kill(*pid);
+                let result = self.manager.kill(*pid);
                 if result.is_err() {
                     log::trace!("kill child[{pid}] failed")
                 }
             }
 
             for _ in 0..pid_len {
-                match self.cleaner.wait() {
+                match self.manager.wait() {
                     Ok(_) => (),
                     Err(e) => log::error!("wait failed {e}"),
                 }
@@ -156,7 +157,7 @@ mod test {
         unistd::getpid,
     };
 
-    use crate::worker::Worker;
+    use crate::worker::{Worker, helper::ProcessManager};
 
     use super::*;
 
@@ -183,7 +184,7 @@ mod test {
             .filter_level(log::LevelFilter::Trace)
             .init();
         let group = WorkerGroup::new(1, Rc::new(SleepWorker {}));
-        let manager = WorkerManager::new(vec![group]);
+        let manager = WorkerManager::new(vec![group], ProcessManager {});
         let mut group_vec = manager.start();
         let pid = getpid();
         log::debug!(target: "test_manager", "start {pid}");

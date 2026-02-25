@@ -1,11 +1,11 @@
 use args::Args;
 use clap::Parser;
-use nix::unistd::getpid;
+use nix::unistd::{getpid, gettid};
 use std::cmp::min;
 use std::io::{Read, Write};
 use std::rc::Rc;
 
-use crate::{
+use httprs::{
     http::{
         handler::Handler,
         header::{HttpHeaderValue, content_type},
@@ -18,18 +18,17 @@ use crate::{
 };
 
 mod args;
-mod http;
-mod process;
-mod server;
-mod util;
-mod worker;
 
 struct SimpleHandler;
 
 const BUF_SIZE: usize = 1024;
 
 impl Handler for SimpleHandler {
-    fn handle(&self, req: &mut http::request::HttpRequest, res: &mut http::response::HttpResponse) {
+    fn handle(
+        &self,
+        req: &mut httprs::http::request::HttpRequest,
+        res: &mut httprs::http::response::HttpResponse,
+    ) {
         res.set_response_code(HttpResponseCode::Ok);
         res.set_header(&content_type(HttpHeaderValue::Str("text/plain")));
 
@@ -84,15 +83,16 @@ impl Handler for SimpleHandler {
 
 fn main() {
     colog::basic_builder()
-        .filter_level(log::LevelFilter::Trace)
+        .filter_level(log::LevelFilter::Info)
         .format(|f, record| {
             writeln!(
                 f,
-                "{} [{:>25}:{:4}] [pid: {:>6}] [{}]\t{} {}",
+                "{} [{:>25}:{:4}] [{:>6}:{:>6}] [{}]\t{} {}",
                 Date::from_system_time(std::time::SystemTime::now()).to_rfc1123(),
                 record.file().unwrap_or(""),
                 record.line().unwrap_or(0),
                 getpid(),
+                gettid(),
                 record.level(),
                 record.target(),
                 record.args()
