@@ -91,21 +91,15 @@ impl Date {
     // make SystemTime to rfc1123-date
     // Mon, 22 Nov 1990 GMT
     pub fn to_rfc1123(&self) -> String {
-        let mut s = String::with_capacity(128);
-        s.push_str(Date::WEEK_DAY[(self.epoch_days % 7) as usize]);
-        s.push_str(", ");
-        s.push_str(&self.day.to_string());
-        s.push_str(" ");
-        s.push_str(Date::MONTH[self.month as usize]);
-        s.push_str(" ");
-        s.push_str(&self.year.to_string());
-        s.push_str(" ");
-        s.push_str(&self.hour.to_string());
-        s.push_str(":");
-        s.push_str(&self.minute.to_string());
-        s.push_str(":");
-        s.push_str(&self.second.to_string());
-        s.push_str(" GMT");
-        s
+        format!(
+            "{}, {:02} {:02} {:04} {:02}:{:02}:{:02} GMT",
+            Date::WEEK_DAY[(self.epoch_days % 7) as usize],
+            self.day,
+            Date::MONTH[self.month as usize],
+            self.year,
+            self.hour,
+            self.minute,
+            self.second,
+        )
     }
 }
