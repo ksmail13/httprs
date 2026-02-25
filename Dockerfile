@@ -1,11 +1,11 @@
 FROM docker.io/library/rust:1.90-alpine3.22 AS builder
 
 RUN apk add --no-cache musl-dev
-WORKDIR /root/server_rs
+WORKDIR /root/httprs
 
-COPY Cargo.toml Cargo.lock .
-
-COPY src/  src/
+COPY Cargo.toml .
+COPY httprs/  httprs/
+COPY httprs-bin/  httprs-bin/
 
 RUN cargo build --profile release
 
@@ -14,6 +14,6 @@ FROM docker.io/library/rockylinux:8
 RUN useradd -m runner
 USER runner
 
-COPY --from=builder /root/server_rs/target/release/server_rs /home/runner/server_rs
+COPY --from=builder /root/httprs/target/release/httprs-bin /home/runner/httprs-bin
 
-entrypoint ["/home/runner/server_rs"]
+ENTRYPOINT ["/home/runner/httprs-bin"]
