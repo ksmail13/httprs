@@ -1,19 +1,21 @@
 use args::Args;
 use clap::Parser;
+use httprs::server::tcp::TcpWorker;
 use nix::unistd::{getpid, gettid};
+use std::cell::RefCell;
 use std::cmp::min;
 use std::io::{Read, Write};
 use std::rc::Rc;
 
 use httprs::{
     http::{
+        Http1,
         handler::Handler,
         header::{HttpHeaderValue, content_type},
-        http::Http1,
         response::HeaderSetter,
         value::HttpResponseCode,
     },
-    server::{Server, ServerArgs, WorkerInfo},
+    server::{Server, ServerArgs, ServerWorkerInfo},
     util::date::Date,
 };
 
@@ -83,7 +85,7 @@ impl Handler for SimpleHandler {
 
 fn main() {
     colog::basic_builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
         .format(|f, record| {
             writeln!(
                 f,
@@ -104,11 +106,13 @@ fn main() {
     let arg = Args::parse();
     log::info!("httprs: {:?}", arg);
 
-    let worker_infos = vec![WorkerInfo {
-        host: arg.host.clone(),
-        port: arg.port,
-        worker: arg.worker,
-        process: Rc::new(Http1::new(arg.max_header_size, SimpleHandler)),
+    let worker_infos = vec![ServerWorkerInfo {
+        worker_count: arg.worker,
+        worker: Rc::new(RefCell::new(TcpWorker::new(
+            arg.timeout_ms,
+            format!("{}:{}", arg.host, arg.port),
+            Rc::new(Http1::new(arg.max_header_size, SimpleHandler)),
+        ))),
     }];
 
     let mut server = Server::new(ServerArgs {

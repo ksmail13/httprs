@@ -24,9 +24,9 @@ impl ChildManager for ProcessManager {
         return match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => Ok(child),
             Ok(ForkResult::Child) => {
-                group.worker.init();
-                group.worker.run();
-                group.worker.cleanup();
+                group.worker.borrow_mut().init();
+                group.worker.borrow().run();
+                group.worker.borrow_mut().cleanup();
                 exit(0);
             }
             Err(err) => Err(err),

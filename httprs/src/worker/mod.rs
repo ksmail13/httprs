@@ -4,7 +4,7 @@ pub mod helper;
 pub mod manager;
 
 pub trait Worker {
-    fn init(&self);
+    fn init(&mut self);
     fn run(&self);
-    fn cleanup(&self);
+    fn cleanup(&mut self);
 }

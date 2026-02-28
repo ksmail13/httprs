@@ -146,7 +146,7 @@ impl<T: ChildManager> WorkerManager<T> {
 
 #[cfg(test)]
 mod test {
-    use std::{rc::Rc, time::Duration};
+    use std::{cell::RefCell, rc::Rc, time::Duration};
 
     use nix::{
         sys::{
@@ -169,9 +169,9 @@ mod test {
             println!("{}", i);
         }
 
-        fn init(&self) {}
+        fn init(&mut self) {}
 
-        fn cleanup(&self) {}
+        fn cleanup(&mut self) {}
     }
 
     #[test]
@@ -183,7 +183,7 @@ mod test {
             .format_timestamp_millis()
             .filter_level(log::LevelFilter::Trace)
             .init();
-        let group = WorkerGroup::new(1, Rc::new(SleepWorker {}));
+        let group = WorkerGroup::new(1, Rc::new(RefCell::new(SleepWorker {})));
         let manager = WorkerManager::new(vec![group], ProcessManager {});
         let mut group_vec = manager.start();
         let pid = getpid();
