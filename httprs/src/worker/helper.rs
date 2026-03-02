@@ -3,13 +3,13 @@ use std::process::exit;
 use nix::{
     errno::Errno,
     sys::{
-        signal::{kill, Signal},
-        wait::{wait, WaitStatus},
+        signal::{Signal, kill},
+        wait::{WaitStatus, wait},
     },
-    unistd::{fork, ForkResult, Pid},
+    unistd::{ForkResult, Pid, fork},
 };
 
-use crate::worker::{error::WaitError, group::WorkerGroup};
+use crate::worker::{WorkerGroup, error::WaitError};
 
 pub trait ChildManager {
     fn make_child(&self, group: &WorkerGroup) -> Result<Pid, Errno>;

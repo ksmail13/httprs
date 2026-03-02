@@ -1,7 +1,6 @@
-use std::any::Any;
+use std::{any::Any, rc::Rc};
 
 mod error;
-pub mod group;
 pub mod helper;
 pub mod manager;
 
@@ -37,5 +36,20 @@ where
 
     fn cleanup(&self, context: &mut Box<dyn Any>) {
         self.cleanup(context.downcast_mut().unwrap())
+    }
+}
+
+pub struct WorkerGroup {
+    pub count: u32,
+    /* It is occur dynamic dispatch, but it will be called one time after fork */
+    pub worker: Rc<dyn AnyWorker>,
+}
+
+impl WorkerGroup {
+    pub fn new(count: u32, worker: Rc<dyn AnyWorker>) -> Self {
+        return Self {
+            count: count,
+            worker: worker,
+        };
     }
 }

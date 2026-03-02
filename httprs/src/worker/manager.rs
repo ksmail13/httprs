@@ -1,11 +1,11 @@
 use nix::{
-    errno::Errno,
-    sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
-    unistd::Pid,
     Error,
+    errno::Errno,
+    sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction},
+    unistd::Pid,
 };
 
-use crate::worker::{error::WaitError, group::WorkerGroup, helper::ChildManager};
+use crate::worker::{WorkerGroup, error::WaitError, helper::ChildManager};
 
 static mut RUNNING: bool = true;
 
@@ -157,7 +157,7 @@ mod test {
         unistd::getpid,
     };
 
-    use crate::worker::{helper::ProcessManager, Worker};
+    use crate::worker::{Worker, helper::ProcessManager};
 
     use super::*;
 

@@ -1,8 +1,6 @@
 use std::rc::Rc;
 
-use crate::worker::{
-    group::WorkerGroup, helper::ProcessManager, manager::WorkerManager, AnyWorker,
-};
+use crate::worker::{AnyWorker, WorkerGroup, helper::ProcessManager, manager::WorkerManager};
 
 pub mod tcp;
 
