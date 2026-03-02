@@ -9,7 +9,7 @@ use std::{
 use nix::{
     libc::{self, siginfo_t},
     sys::{
-        signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction},
+        signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
         socket::{
             setsockopt,
             sockopt::{ReceiveTimeout, ReuseAddr, ReusePort},
@@ -50,14 +50,19 @@ fn register_signal() {
 pub struct TcpWorker {
     timeout_ms: u64,
     tcp_process: Rc<dyn Process>,
+    host: String,
+}
 
-    listener: TcpListener,
+pub struct TcpWorkerContext {
+    pub listener: TcpListener,
 }
 
 impl Worker for TcpWorker {
-    fn run(&self) {
+    type Context = TcpWorkerContext;
+
+    fn run(&self, context: &mut Self::Context) {
         while unsafe { RUNNING } {
-            let stream_result = self.listener.accept();
+            let stream_result = context.listener.accept();
 
             match stream_result {
                 Ok((stream, client)) => {
@@ -77,15 +82,23 @@ impl Worker for TcpWorker {
         }
     }
 
-    fn init(&mut self) {
+    fn init(&self) -> Self::Context {
         let pid = nix::unistd::getpid();
         let process = &self.tcp_process.name();
         log::trace!(target: "TcpWorker.init", "TcpWorker start[{pid}:{process}]");
+        log::debug!(target: "TcpWorker.new", "TcpWorker start host: {}", &self.host);
+        let listener = TcpListener::bind(&self.host).unwrap();
+
+        setsockopt(&listener, ReceiveTimeout, &TimeVal::new(1, 0)).unwrap();
+        setsockopt(&listener, ReuseAddr, &true).unwrap();
+        setsockopt(&listener, ReusePort, &true).unwrap();
 
         register_signal();
+
+        return Self::Context { listener };
     }
 
-    fn cleanup(&mut self) {
+    fn cleanup(&self, _: &mut Self::Context) {
         let pid = nix::unistd::getpid();
         let process = &self.tcp_process.name();
         log::trace!(target: "TcpWorker.cleanup", "TcpWorker stop[{pid}:{process}]");
@@ -94,17 +107,10 @@ impl Worker for TcpWorker {
 
 impl TcpWorker {
     pub fn new(timeout_ms: u64, host: String, tcp_process: Rc<dyn Process>) -> Self {
-        log::debug!(target: "TcpWorker.new", "TcpWorker start host: {host}");
-        let listener = TcpListener::bind(&host).unwrap();
-
-        setsockopt(&listener, ReceiveTimeout, &TimeVal::new(1, 0)).unwrap();
-        setsockopt(&listener, ReuseAddr, &true).unwrap();
-        setsockopt(&listener, ReusePort, &true).unwrap();
-
         return Self {
             timeout_ms,
             tcp_process,
-            listener,
+            host,
         };
     }
 }
@@ -112,7 +118,7 @@ impl TcpWorker {
 #[allow(dead_code)]
 pub trait Process {
     fn process(&self, stream: TcpStream, client_addr: &SocketAddr)
-    -> Result<(usize, usize), Error>;
+        -> Result<(usize, usize), Error>;
 
     fn name(&self) -> String {
         return "process".to_string();
@@ -128,12 +134,43 @@ impl Display for dyn Process {
 mod test {
     use std::{
         io::{ErrorKind, Read, Write},
-        net::{SocketAddr, TcpListener, TcpStream},
-        thread,
-        time::Duration,
+        net::SocketAddr,
     };
 
-    use crate::server::{Error, tcp::Process};
+    use crate::server::{tcp::Process, Error};
+
+    #[test]
+    fn success() {
+        let process = EchoProcess {
+            prefix: Some("test".to_string()),
+        };
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local_addr = listener.local_addr().unwrap();
+
+        let t = std::thread::spawn(move || {
+            let (stream, remote_addr) = listener.accept().unwrap();
+            process.process(stream, &remote_addr)
+        });
+
+        let mut client = std::net::TcpStream::connect(local_addr).unwrap();
+        let _ = client.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+
+        let written = client.write("echo".as_bytes()).unwrap();
+        let _ = client.flush();
+
+        let mut v = vec![0; written + 6];
+        client.read_exact(&mut v).unwrap();
+        let received = String::from_utf8(v).unwrap();
+        println!("received : {}", received);
+        assert_eq!("test: echo".to_string(), received);
+
+        drop(client);
+
+        let (readed, writed) = t.join().unwrap().unwrap();
+        assert_eq!(readed, 4);
+        assert_eq!(writed, 4);
+    }
 
     #[derive(Debug)]
     #[allow(dead_code)]
@@ -144,7 +181,7 @@ mod test {
     impl Process for EchoProcess {
         fn process(
             &self,
-            mut stream: TcpStream,
+            mut stream: std::net::TcpStream,
             client: &SocketAddr,
         ) -> Result<(usize, usize), Error> {
             let pid = nix::unistd::getpid();
@@ -204,38 +241,5 @@ mod test {
         fn name(&self) -> String {
             return "EchoProcess".to_string();
         }
-    }
-
-    #[test]
-    fn success() {
-        let process = EchoProcess {
-            prefix: Some("test".to_string()),
-        };
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let local_addr = listener.local_addr().unwrap();
-
-        let t = thread::spawn(move || {
-            let (stream, remote_addr) = listener.accept().unwrap();
-            process.process(stream, &remote_addr)
-        });
-
-        let mut client = TcpStream::connect(local_addr).unwrap();
-        let _ = client.set_read_timeout(Some(Duration::from_secs(1)));
-
-        let written = client.write("echo".as_bytes()).unwrap();
-        let _ = client.flush();
-
-        let mut v = vec![0; written + 6];
-        client.read_exact(&mut v).unwrap();
-        let received = String::from_utf8(v).unwrap();
-        println!("received : {}", received);
-        assert_eq!("test: echo".to_string(), received);
-
-        drop(client);
-
-        let (readed, writed) = t.join().unwrap().unwrap();
-        assert_eq!(readed, 4);
-        assert_eq!(writed, 4);
     }
 }

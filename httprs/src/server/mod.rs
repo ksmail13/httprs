@@ -1,12 +1,14 @@
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
-use crate::worker::{Worker, group::WorkerGroup, helper::ProcessManager, manager::WorkerManager};
+use crate::worker::{
+    group::WorkerGroup, helper::ProcessManager, manager::WorkerManager, AnyWorker,
+};
 
 pub mod tcp;
 
 pub struct ServerWorkerInfo {
     pub worker_count: u32,
-    pub worker: Rc<RefCell<dyn Worker>>,
+    pub worker: Rc<dyn AnyWorker>,
 }
 
 pub struct ServerArgs {

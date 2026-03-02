@@ -2,7 +2,6 @@ use args::Args;
 use clap::Parser;
 use httprs::server::tcp::TcpWorker;
 use nix::unistd::{getpid, gettid};
-use std::cell::RefCell;
 use std::cmp::min;
 use std::io::{Read, Write};
 use std::rc::Rc;
@@ -12,7 +11,8 @@ use httprs::{
         Http1,
         handler::Handler,
         header::{HttpHeaderValue, content_type},
-        response::HeaderSetter,
+        request::HttpRequest,
+        response::{HeaderSetter, HttpResponse},
         value::HttpResponseCode,
     },
     server::{Server, ServerArgs, ServerWorkerInfo},
@@ -26,11 +26,7 @@ struct SimpleHandler;
 const BUF_SIZE: usize = 1024;
 
 impl Handler for SimpleHandler {
-    fn handle(
-        &self,
-        req: &mut httprs::http::request::HttpRequest,
-        res: &mut httprs::http::response::HttpResponse,
-    ) {
+    fn handle(&self, req: &mut HttpRequest, res: &mut HttpResponse) {
         res.set_response_code(HttpResponseCode::Ok);
         res.set_header(&content_type(HttpHeaderValue::Str("text/plain")));
 
@@ -108,11 +104,11 @@ fn main() {
 
     let worker_infos = vec![ServerWorkerInfo {
         worker_count: arg.worker,
-        worker: Rc::new(RefCell::new(TcpWorker::new(
+        worker: Rc::new(TcpWorker::new(
             arg.timeout_ms,
             format!("{}:{}", arg.host, arg.port),
             Rc::new(Http1::new(arg.max_header_size, SimpleHandler)),
-        ))),
+        )),
     }];
 
     let mut server = Server::new(ServerArgs {

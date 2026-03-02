@@ -1,8 +1,8 @@
 use nix::{
-    Error,
     errno::Errno,
-    sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction},
+    sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
     unistd::Pid,
+    Error,
 };
 
 use crate::worker::{error::WaitError, group::WorkerGroup, helper::ChildManager};
@@ -146,7 +146,7 @@ impl<T: ChildManager> WorkerManager<T> {
 
 #[cfg(test)]
 mod test {
-    use std::{cell::RefCell, rc::Rc, time::Duration};
+    use std::{rc::Rc, time::Duration};
 
     use nix::{
         sys::{
@@ -157,21 +157,25 @@ mod test {
         unistd::getpid,
     };
 
-    use crate::worker::{Worker, helper::ProcessManager};
+    use crate::worker::{helper::ProcessManager, Worker};
 
     use super::*;
 
     struct SleepWorker {}
 
     impl Worker for SleepWorker {
-        fn run(&self) {
+        type Context = ();
+
+        fn run(&self, _: &mut Self::Context) {
             let i: u32 = (0..10000).sum();
             println!("{}", i);
         }
 
-        fn init(&mut self) {}
+        fn init(&self) -> Self::Context {
+            ()
+        }
 
-        fn cleanup(&mut self) {}
+        fn cleanup(&self, _: &mut Self::Context) {}
     }
 
     #[test]
@@ -183,7 +187,7 @@ mod test {
             .format_timestamp_millis()
             .filter_level(log::LevelFilter::Trace)
             .init();
-        let group = WorkerGroup::new(1, Rc::new(RefCell::new(SleepWorker {})));
+        let group = WorkerGroup::new(1, Rc::new(SleepWorker {}));
         let manager = WorkerManager::new(vec![group], ProcessManager {});
         let mut group_vec = manager.start();
         let pid = getpid();

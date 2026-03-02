@@ -3,10 +3,10 @@ use std::process::exit;
 use nix::{
     errno::Errno,
     sys::{
-        signal::{Signal, kill},
-        wait::{WaitStatus, wait},
+        signal::{kill, Signal},
+        wait::{wait, WaitStatus},
     },
-    unistd::{ForkResult, Pid, fork},
+    unistd::{fork, ForkResult, Pid},
 };
 
 use crate::worker::{error::WaitError, group::WorkerGroup};
@@ -24,9 +24,9 @@ impl ChildManager for ProcessManager {
         return match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => Ok(child),
             Ok(ForkResult::Child) => {
-                group.worker.borrow_mut().init();
-                group.worker.borrow().run();
-                group.worker.borrow_mut().cleanup();
+                let mut ctx = group.worker.init();
+                group.worker.run(&mut ctx);
+                group.worker.cleanup(&mut ctx);
                 exit(0);
             }
             Err(err) => Err(err),
