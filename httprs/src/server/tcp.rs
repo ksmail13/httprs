@@ -1,5 +1,6 @@
 use std::{
     fmt::Display,
+    io::ErrorKind,
     net::{SocketAddr, TcpListener, TcpStream},
     process::exit,
     rc::Rc,
@@ -8,16 +9,10 @@ use std::{
 
 use nix::{
     libc::{self, siginfo_t},
-    sys::{
-        signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
-        socket::{
-            setsockopt,
-            sockopt::{ReceiveTimeout, ReuseAddr, ReusePort},
-        },
-        time::TimeVal,
-    },
+    sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction},
     unistd::getpid,
 };
+use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::server::Error;
 use crate::worker::Worker;
@@ -73,7 +68,7 @@ impl Worker for TcpWorker {
                         Err(err) => log::warn!("process failed {:?}", err),
                     }
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => (),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => (),
                 Err(err) => {
                     log::error!(target: "TcpWorker::run", "Accept failed: {err}");
                     exit(1);
@@ -87,11 +82,21 @@ impl Worker for TcpWorker {
         let process = &self.tcp_process.name();
         log::trace!(target: "TcpWorker.init", "TcpWorker start[{pid}:{process}]");
         log::debug!(target: "TcpWorker.new", "TcpWorker start host: {}", &self.host);
-        let listener = TcpListener::bind(&self.host).unwrap();
 
-        setsockopt(&listener, ReceiveTimeout, &TimeVal::new(1, 0)).unwrap();
-        setsockopt(&listener, ReuseAddr, &true).unwrap();
-        setsockopt(&listener, ReusePort, &true).unwrap();
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(1000)))
+            .and_then(|_| socket.set_reuse_address(true))
+            .and_then(|_| socket.set_reuse_port(true))
+            .and_then(|_| {
+                self.host
+                    .parse::<SocketAddr>()
+                    .map_err(|e| std::io::Error::new(ErrorKind::AddrNotAvailable, e))
+            })
+            .and_then(|addr| socket.bind(&addr.into()))
+            .and_then(|_| socket.listen(128))
+            .unwrap();
+        let listener = socket.into();
 
         register_signal();
 
@@ -118,7 +123,7 @@ impl TcpWorker {
 #[allow(dead_code)]
 pub trait Process {
     fn process(&self, stream: TcpStream, client_addr: &SocketAddr)
-        -> Result<(usize, usize), Error>;
+    -> Result<(usize, usize), Error>;
 
     fn name(&self) -> String {
         return "process".to_string();
@@ -137,7 +142,7 @@ mod test {
         net::SocketAddr,
     };
 
-    use crate::server::{tcp::Process, Error};
+    use crate::server::{Error, tcp::Process};
 
     #[test]
     fn success() {
