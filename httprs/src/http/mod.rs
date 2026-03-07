@@ -122,26 +122,14 @@ where
                 ));
             }
 
-            while buf
-                .chars()
-                .nth(0)
-                .map(|v| v.is_whitespace())
-                .unwrap_or(false)
-            {
-                buf.remove(0);
-            }
-
             // head end
-            if buf.is_empty() {
+            if buf == "\r\n" {
                 break;
             }
 
             if !buf.ends_with("\r\n") {
                 return Err(Error::ParseFail(format!("Invalid heaader {}", buf)));
             }
-
-            buf.remove(buf.len() - 1); // delete \n
-            buf.remove(buf.len() - 1); // delete \r
 
             log::trace!("<< {}", buf);
 
@@ -172,7 +160,7 @@ where
         reader: Box<dyn Read + 'a>,
     ) -> Result<HttpRequest<'a>, Error> {
         let raw_header = &lines;
-        let buf = &raw_header[0];
+        let buf = raw_header[0].trim();
 
         let mut req_line = buf.split(" ");
 
@@ -216,7 +204,7 @@ where
     fn init_header<'a>(&self, reader: &'a Vec<String>) -> HashMap<&'a str, Vec<&'a str>> {
         let mut header_map: HashMap<&str, Vec<&str>> = HashMap::new();
         for i in 1..reader.len() {
-            let buf = &reader[i];
+            let buf = reader[i].trim();
 
             let div_idx = match buf.find(':') {
                 Some(idx) => idx,
@@ -353,5 +341,71 @@ mod test {
         assert_eq!(buf, [1, 2, 3]);
         assert_eq!(reader.read(&mut buf).unwrap(), 3);
         assert_eq!(buf, [4, 5, 6]);
+    }
+
+    struct DummyHandler;
+    impl crate::http::handler::Handler for DummyHandler {
+        fn handle(
+            &self,
+            _req: &mut crate::http::request::HttpRequest,
+            _res: &mut crate::http::response::HttpResponse,
+        ) {
+        }
+    }
+
+    #[test]
+    fn test_read_header() {
+        use crate::http::Http1;
+        use std::net::SocketAddr;
+
+        let http1 = Http1::new(1024, DummyHandler);
+        let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        let header_data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nBody";
+        let mut reader: Box<dyn std::io::Read> =
+            Box::new(std::io::Cursor::new(header_data.to_vec()));
+
+        let result = http1.read_header(&client_addr, &mut reader);
+        assert!(result.is_ok());
+
+        let (_readed, header_res) = result.unwrap();
+        assert_eq!(header_res.lines.len(), 2);
+        assert_eq!(header_res.lines[0], "GET / HTTP/1.1\r\n");
+        assert_eq!(header_res.lines[1], "Host: localhost\r\n");
+
+        let remain = header_res.remain.into_inner();
+        assert_eq!(remain, b"Body");
+    }
+
+    #[test]
+    fn test_read_header_limit_exceed() {
+        use crate::http::Http1;
+        use std::net::SocketAddr;
+
+        let http1 = Http1::new(10, DummyHandler);
+        let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        let header_data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nBody";
+        let mut reader: Box<dyn std::io::Read> =
+            Box::new(std::io::Cursor::new(header_data.to_vec()));
+
+        let result = http1.read_header(&client_addr, &mut reader);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_header_invalid_header_line() {
+        use crate::http::Http1;
+        use std::net::SocketAddr;
+
+        let http1 = Http1::new(1024, DummyHandler);
+        let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+        let header_data = b"GET / HTTP/1.1\r\nHost: localhost\n\nBody";
+        let mut reader: Box<dyn std::io::Read> =
+            Box::new(std::io::Cursor::new(header_data.to_vec()));
+
+        let result = http1.read_header(&client_addr, &mut reader);
+        assert!(result.is_err());
     }
 }
