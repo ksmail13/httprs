@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{IoSlice, Write},
+    io::{BufWriter, IoSlice, Write},
     rc::Rc,
     time::SystemTime,
 };
@@ -68,11 +68,16 @@ impl<'a> Write for HttpResponse<'a> {
             self.buffer.iter().map(|b| b.len()).sum::<usize>(),
         ));
         self.set_header(&date(SystemTime::now()));
-        let header_written = self.write_header()?;
+
+        let mut buf_writer = BufWriter::with_capacity(1 << 15, &mut self.writer);
+
+        let mut written = buf_writer.write(format!("{} {}", self.version, self.code).as_bytes())?;
+        written += buf_writer.write(LINE_END)?;
+        written += Self::write_header(&self.header, &self.header_str, &mut buf_writer)?;
 
         if self.header_only {
-            self.writer.flush()?;
-            self.written = header_written;
+            buf_writer.flush()?;
+            self.written = written;
             return Ok(());
         }
 
@@ -80,14 +85,14 @@ impl<'a> Write for HttpResponse<'a> {
 
         let mut writer: Box<dyn Write> = match self.header.get("Content-Encoding") {
             Some(v) if *v.to_string() == "gzip" => {
-                Box::new(GzEncoder::new(&mut self.writer, Compression::default()))
+                Box::new(GzEncoder::new(buf_writer, Compression::default()))
             }
-            _ => Box::new(&mut self.writer),
+            _ => Box::new(buf_writer),
         };
         let body_written = writer.write_vectored(&data)?;
 
         writer.flush()?;
-        self.written = header_written + body_written;
+        self.written = written + body_written;
         Ok(())
     }
 }
@@ -116,41 +121,46 @@ impl HttpResponse<'_> {
         self.code = code;
     }
 
-    pub fn write_header(&mut self) -> std::io::Result<usize> {
-        let status_line = format!(
-            "{} {} {}",
-            self.version,
-            self.code.code(),
-            self.code.reason()
-        );
-
-        let mut written = self.writer.write(status_line.as_bytes())?;
-        written += self.writer.write(LINE_END)?;
-
-        if !self.header.is_empty() {
-            for (key, value) in self.header.clone().into_iter() {
-                written +=
-                    self.write_header_value(&key.as_bytes(), value.to_string().as_bytes())?;
+    pub fn write_header(
+        header: &HashMap<&'static str, Rc<dyn crate::http::header::ToString>>,
+        header_str: &HashMap<Rc<String>, Rc<dyn crate::http::header::ToString>>,
+        writer: &mut BufWriter<&mut Box<dyn Write + '_>>,
+    ) -> std::io::Result<usize> {
+        let mut written = 0;
+        if !header.is_empty() {
+            for (key, value) in header.clone().into_iter() {
+                written += Self::write_header_value(
+                    writer,
+                    &key.as_bytes(),
+                    value.to_string().as_bytes(),
+                )?;
             }
         }
 
-        if !self.header_str.is_empty() {
-            for (key, value) in self.header_str.clone().into_iter() {
-                written +=
-                    self.write_header_value(&key.as_bytes(), value.to_string().as_bytes())?;
+        if !header_str.is_empty() {
+            for (key, value) in header_str.clone().into_iter() {
+                written += Self::write_header_value(
+                    writer,
+                    &key.as_bytes(),
+                    value.to_string().as_bytes(),
+                )?;
             }
         }
 
-        written += self.writer.write(LINE_END)?;
+        written += writer.write(LINE_END)?;
 
         return Ok(written);
     }
 
-    fn write_header_value(&mut self, k: &[u8], v: &[u8]) -> std::io::Result<usize> {
-        let mut written = self.writer.write(k)?;
-        written += self.writer.write(KV_SEP)?;
-        written += self.writer.write(v)?;
-        written += self.writer.write(LINE_END)?;
+    fn write_header_value(
+        writer: &mut BufWriter<&mut Box<dyn Write + '_>>,
+        k: &[u8],
+        v: &[u8],
+    ) -> std::io::Result<usize> {
+        let mut written = writer.write(k)?;
+        written += writer.write(KV_SEP)?;
+        written += writer.write(v)?;
+        written += writer.write(LINE_END)?;
 
         return Ok(written);
     }

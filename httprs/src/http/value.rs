@@ -1,4 +1,8 @@
-use std::{fmt::Display, hash::Hash, net::SocketAddr};
+use std::{
+    fmt::{Display, Formatter},
+    hash::Hash,
+    net::SocketAddr,
+};
 
 pub enum HttpVersion {
     Http10,
@@ -25,7 +29,7 @@ impl Default for HttpVersion {
 }
 
 impl Display for HttpVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return f.write_str(match self {
             HttpVersion::Http10 => "HTTP/1.0",
             HttpVersion::Http11 => "HTTP/1.1",
@@ -62,7 +66,7 @@ impl HttpMethod {
 }
 
 impl Display for HttpMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return f.write_fmt(format_args!(
             "{}",
             match self {
@@ -136,6 +140,12 @@ impl HttpResponseCode {
     }
 }
 
+impl Display for HttpResponseCode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!("{} {}", self.code(), self.reason()));
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Error {
@@ -145,8 +155,8 @@ pub enum Error {
     BadRequest(SocketAddr, &'static str),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             Error::ParseFail(m) => ("parse fail", m),
             Error::ReadFail(m) => ("read fail", m),
