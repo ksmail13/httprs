@@ -72,7 +72,7 @@ where
                 server::Error::ParseFail(e.to_string())
             })?;
         let mut response = HttpResponse::from_request(&request, Box::new(&stream));
-        response.set_header(&server(HttpHeaderValue::Str("server_rs")));
+        response.set_header(server(HttpHeaderValue::Str("server_rs")));
 
         self.handler.handle(&mut request, &mut response);
 
@@ -223,9 +223,9 @@ where
         let mut response = HttpResponse::new(HttpVersion::default(), Box::new(stream));
 
         response.set_response_code(HttpResponseCode::BadRequest);
-        response.set_header(&server(HttpHeaderValue::Str("server_rs")));
-        response.set_header(&content_type(HttpHeaderValue::Str("text/plain")));
-        response.set_header(&date(SystemTime::now()));
+        response.set_header(server(HttpHeaderValue::Str("server_rs")));
+        response.set_header(content_type(HttpHeaderValue::Str("text/plain")));
+        response.set_header(date(SystemTime::now()));
         let _ = response.write("Invalid request".as_bytes());
         let _ = response.flush();
     }
