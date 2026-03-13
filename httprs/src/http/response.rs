@@ -1,7 +1,5 @@
 use std::{
-    collections::HashMap,
-    io::{BufWriter, IoSlice, Write},
-    rc::Rc,
+    io::{IoSlice, Write},
     time::SystemTime,
 };
 
@@ -66,27 +64,28 @@ impl<'a> Write for HttpResponse<'a> {
         ));
         self.set_header(date(SystemTime::now()));
 
-        let mut buf_writer = BufWriter::with_capacity(1 << 15, &mut self.writer);
-
-        let mut header_lines: Vec<String> = vec![];
+        let mut header_lines: Vec<&str> = vec![];
         let status_line = format!("{} {}", self.version.clone(), self.code);
-        header_lines.push(status_line);
+        header_lines.push(status_line.as_str());
+        header_lines.push(LINE_END);
 
-        self.header.into_iter().for_each(|i| {
-            let k = i.key_str();
-            let v = i.value().to_string();
-            header_lines.push(format!("{}: {}", k, v));
-        });
+        for i in self.header.into_iter() {
+            header_lines.push(i.key_str());
+            header_lines.push(KV_SEP);
+            header_lines.push(i.value().to_str());
+            header_lines.push(LINE_END);
+        }
 
-        let header_slices: Vec<IoSlice<'_>> = header_lines
-            .iter()
-            .flat_map(|h| [IoSlice::new(h.as_bytes()), IoSlice::new(LINE_END)])
-            .collect();
-        let written = buf_writer.write_vectored(&header_slices)?;
-        buf_writer.write(LINE_END)?;
+        let written = self.writer.write_vectored(
+            &header_lines
+                .iter()
+                .map(|s| IoSlice::new(s.as_bytes()))
+                .collect::<Vec<_>>(),
+        )?;
+        self.writer.write(LINE_END.as_bytes())?;
 
         if self.header_only {
-            buf_writer.flush()?;
+            self.writer.flush()?;
             self.written = written;
             return Ok(());
         }
@@ -94,10 +93,10 @@ impl<'a> Write for HttpResponse<'a> {
         let data: Vec<IoSlice<'_>> = self.buffer.iter().map(|b| IoSlice::new(&b)).collect();
 
         let mut writer: Box<dyn Write> = match self.header.get("Content-Encoding") {
-            Some(v) if *v.to_string() == "gzip" => {
-                Box::new(GzEncoder::new(buf_writer, Compression::default()))
+            Some(v) if v.to_str() == "gzip" => {
+                Box::new(GzEncoder::new(&mut self.writer, Compression::default()))
             }
-            _ => Box::new(buf_writer),
+            _ => Box::new(&mut self.writer),
         };
         let body_written = writer.write_vectored(&data)?;
 
@@ -118,56 +117,12 @@ impl<'a> HeaderSetter<HttpHeader> for HttpResponse<'a> {
     }
 }
 
-const LINE_END: &[u8] = "\r\n".as_bytes();
-const KV_SEP: &[u8] = ": ".as_bytes();
+const LINE_END: &str = "\r\n";
+const KV_SEP: &str = ": ";
 
 impl HttpResponse<'_> {
     pub fn set_response_code(&mut self, code: HttpResponseCode) {
         self.code = code;
-    }
-
-    pub fn write_header(
-        header: &HashMap<&'static str, Rc<dyn crate::http::header::ToString>>,
-        header_str: &HashMap<Rc<String>, Rc<dyn crate::http::header::ToString>>,
-        writer: &mut BufWriter<&mut Box<dyn Write + '_>>,
-    ) -> std::io::Result<usize> {
-        let mut written = 0;
-        if !header.is_empty() {
-            for (key, value) in header.clone().into_iter() {
-                written += Self::write_header_value(
-                    writer,
-                    &key.as_bytes(),
-                    value.to_string().as_bytes(),
-                )?;
-            }
-        }
-
-        if !header_str.is_empty() {
-            for (key, value) in header_str.clone().into_iter() {
-                written += Self::write_header_value(
-                    writer,
-                    &key.as_bytes(),
-                    value.to_string().as_bytes(),
-                )?;
-            }
-        }
-
-        written += writer.write(LINE_END)?;
-
-        return Ok(written);
-    }
-
-    fn write_header_value(
-        writer: &mut BufWriter<&mut Box<dyn Write + '_>>,
-        k: &[u8],
-        v: &[u8],
-    ) -> std::io::Result<usize> {
-        let mut written = writer.write(k)?;
-        written += writer.write(KV_SEP)?;
-        written += writer.write(v)?;
-        written += writer.write(LINE_END)?;
-
-        return Ok(written);
     }
 }
 

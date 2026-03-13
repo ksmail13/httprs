@@ -5,8 +5,8 @@ use std::time::SystemTime;
 use crate::http::value::WeightedValue;
 use crate::util::date::Date;
 
-pub trait ToString: std::fmt::Debug {
-    fn to_string(&self) -> Rc<String>;
+pub trait ToStr: std::fmt::Debug {
+    fn to_str(&self) -> &str;
 }
 
 #[allow(dead_code)]
@@ -16,7 +16,7 @@ pub enum HttpHeaderValue {
 }
 
 impl HttpHeaderValue {
-    pub fn to_value(&self) -> Rc<dyn ToString> {
+    pub fn to_value(&self) -> Rc<dyn ToStr> {
         match self {
             HttpHeaderValue::String(string) => Rc::new(HeaderValueString {
                 string: Rc::new(string.clone()),
@@ -31,9 +31,9 @@ struct HeaderValueStr {
     str: &'static str,
 }
 
-impl ToString for HeaderValueStr {
-    fn to_string(&self) -> Rc<String> {
-        Rc::new(self.str.to_string())
+impl ToStr for HeaderValueStr {
+    fn to_str(&self) -> &str {
+        self.str
     }
 }
 
@@ -42,9 +42,9 @@ struct HeaderValueString {
     string: Rc<String>,
 }
 
-impl ToString for HeaderValueString {
-    fn to_string(&self) -> Rc<String> {
-        self.string.clone()
+impl ToStr for HeaderValueString {
+    fn to_str(&self) -> &str {
+        self.string.as_ref()
     }
 }
 
@@ -52,50 +52,55 @@ impl ToString for HeaderValueString {
 #[derive(Debug)]
 struct HeaderValueWeighted {
     weighted: Vec<WeightedValue>,
+    string: String,
 }
 
-impl ToString for HeaderValueWeighted {
-    fn to_string(&self) -> Rc<String> {
-        let mut val = self.weighted.iter().fold(String::new(), |mut s, w| {
+impl HeaderValueWeighted {
+    pub fn from(weighted: Vec<WeightedValue>) -> Self {
+        let mut string = weighted.iter().fold(String::new(), |mut s, w| {
             s.push_str(&w.value());
             if let Some(w) = w.weight() {
                 let _ = write!(s, ";q={:.2}", w).map_err(|e| e.to_string());
             }
             s
         });
-        val.remove(val.len() - 1);
-        return Rc::new(val);
+        string.pop();
+        Self { weighted, string }
+    }
+}
+
+impl ToStr for HeaderValueWeighted {
+    fn to_str(&self) -> &str {
+        self.string.as_str()
     }
 }
 
 #[derive(Debug)]
 struct HeaderValueTime {
-    time: Date,
+    string: String,
 }
 
 impl HeaderValueTime {
-    fn time_to_header_string(&self) -> String {
-        self.time.to_rfc1123()
-    }
-
     pub fn from_system_time(time: SystemTime) -> Self {
+        let date = Date::from(time);
+        let date_string = date.to_rfc1123();
         Self {
-            time: Date::from(time),
+            string: date_string,
         }
     }
 }
 
-impl ToString for HeaderValueTime {
-    fn to_string(&self) -> Rc<String> {
-        Rc::new(self.time_to_header_string())
+impl ToStr for HeaderValueTime {
+    fn to_str(&self) -> &str {
+        self.string.as_str()
     }
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum HttpHeader {
-    StrKey(&'static str, Rc<dyn ToString>),
-    StringKey(Rc<String>, Rc<dyn ToString>),
+    StrKey(&'static str, Rc<dyn ToStr>),
+    StringKey(Rc<String>, Rc<dyn ToStr>),
 }
 
 impl HttpHeader {
@@ -106,7 +111,7 @@ impl HttpHeader {
         }
     }
 
-    pub fn value(&self) -> &Rc<dyn ToString> {
+    pub fn value(&self) -> &Rc<dyn ToStr> {
         match self {
             HttpHeader::StrKey(_, value) => value,
             HttpHeader::StringKey(_, value) => value,
@@ -114,12 +119,12 @@ impl HttpHeader {
     }
 }
 
-fn from_str_key(key: &'static str, value: Rc<dyn ToString>) -> HttpHeader {
+fn from_str_key(key: &'static str, value: Rc<dyn ToStr>) -> HttpHeader {
     HttpHeader::StrKey(key, value)
 }
 
 #[allow(dead_code)]
-fn from_string_key(key: String, value: Rc<dyn ToString>) -> HttpHeader {
+fn from_string_key(key: String, value: Rc<dyn ToStr>) -> HttpHeader {
     HttpHeader::StringKey(Rc::new(key), value)
 }
 
@@ -131,7 +136,7 @@ pub fn date(time: std::time::SystemTime) -> HttpHeader {
 // entity
 #[allow(dead_code)]
 pub fn allow(values: Vec<WeightedValue>) -> HttpHeader {
-    from_str_key("Allow", Rc::new(HeaderValueWeighted { weighted: values }))
+    from_str_key("Allow", Rc::new(HeaderValueWeighted::from(values)))
 }
 
 #[allow(dead_code)]
@@ -244,7 +249,7 @@ impl HttpResponseHeader {
         self.undefined.push(header);
     }
 
-    pub fn set(&mut self, key: &'static str, value: Rc<dyn ToString>) {
+    pub fn set(&mut self, key: &'static str, value: Rc<dyn ToStr>) {
         if let Some(index) = Self::HEADER_LIST
             .iter()
             .position(|&k| k.eq_ignore_ascii_case(key))
@@ -265,7 +270,7 @@ impl HttpResponseHeader {
         self.undefined.push(HttpHeader::StrKey(key, value));
     }
 
-    pub fn get(&self, key: &'static str) -> Option<Rc<dyn ToString>> {
+    pub fn get(&self, key: &'static str) -> Option<Rc<dyn ToStr>> {
         if let Some(index) = Self::HEADER_LIST
             .iter()
             .position(|&k| k.eq_ignore_ascii_case(key))
@@ -330,20 +335,18 @@ impl<'a> IntoIterator for &'a HttpResponseHeader {
 mod test {
     use std::time::SystemTime;
 
-    use crate::http::header::{HeaderValueTime, ToString};
+    use crate::http::header::{HeaderValueTime, ToStr};
 
     #[test]
     fn test_time_to_header_string() {
         assert_eq!(
-            HeaderValueTime::from_system_time(SystemTime::UNIX_EPOCH)
-                .to_string()
-                .as_ref(),
+            HeaderValueTime::from_system_time(SystemTime::UNIX_EPOCH).to_str(),
             "Thu, 01 Jan 1970 00:00:00 GMT"
         );
 
         println!(
             "{}",
-            HeaderValueTime::from_system_time(SystemTime::now()).to_string()
+            HeaderValueTime::from_system_time(SystemTime::now()).to_str()
         )
     }
 
@@ -355,28 +358,22 @@ mod test {
         // 1. 정의된 헤더 테스트 (Predefined)
         let content_type = HttpHeaderValue::Str("text/plain").to_value();
         headers.set("Content-Type", content_type.clone());
-        assert_eq!(
-            headers.get("Content-Type").unwrap().to_string().as_ref(),
-            "text/plain"
-        );
+        assert_eq!(headers.get("Content-Type").unwrap().to_str(), "text/plain");
 
         // 대소문자 구분 없음 확인
-        assert_eq!(
-            headers.get("content-type").unwrap().to_string().as_ref(),
-            "text/plain"
-        );
+        assert_eq!(headers.get("content-type").unwrap().to_str(), "text/plain");
 
         // 2. 정의되지 않은 커스텀 헤더 테스트 (Undefined)
         let x_custom = HttpHeaderValue::Str("custom-value").to_value();
         headers.set("X-Custom-Header", x_custom.clone());
         assert_eq!(
-            headers.get("X-Custom-Header").unwrap().to_string().as_ref(),
+            headers.get("X-Custom-Header").unwrap().to_str(),
             "custom-value"
         );
 
         // 커스텀 헤더 대소문자 구분 없음 확인
         assert_eq!(
-            headers.get("x-custom-header").unwrap().to_string().as_ref(),
+            headers.get("x-custom-header").unwrap().to_str(),
             "custom-value"
         );
 
@@ -384,7 +381,7 @@ mod test {
         let new_content_type = HttpHeaderValue::Str("application/json").to_value();
         headers.set("CONTENT-TYPE", new_content_type.clone());
         assert_eq!(
-            headers.get("Content-Type").unwrap().to_string().as_ref(),
+            headers.get("Content-Type").unwrap().to_str(),
             "application/json"
         );
 
