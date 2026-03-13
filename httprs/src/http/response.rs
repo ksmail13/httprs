@@ -1,14 +1,12 @@
 use std::{
-    collections::HashMap,
-    io::{BufWriter, IoSlice, Write},
-    rc::Rc,
+    io::{IoSlice, Write},
     time::SystemTime,
 };
 
 use flate2::{Compression, write::GzEncoder};
 
 use crate::http::{
-    header::{HttpHeader, content_length, date},
+    header::{HttpHeader, HttpResponseHeader, content_length, date},
     request::HttpRequest,
     value::{HttpMethod, HttpResponseCode, HttpVersion},
 };
@@ -16,8 +14,7 @@ use crate::http::{
 pub struct HttpResponse<'a> {
     version: HttpVersion,
     code: HttpResponseCode,
-    header: HashMap<&'static str, Rc<dyn crate::http::header::ToString>>,
-    header_str: HashMap<Rc<String>, Rc<dyn crate::http::header::ToString>>,
+    header: HttpResponseHeader,
     writer: Box<dyn Write + 'a>,
     buffer: Vec<Vec<u8>>,
     header_only: bool,
@@ -29,8 +26,7 @@ impl<'a> HttpResponse<'a> {
         return Self {
             version: version,
             code: HttpResponseCode::Ok,
-            header: HashMap::new(),
-            header_str: HashMap::new(),
+            header: HttpResponseHeader::new(),
             writer: writer,
             buffer: vec![],
             header_only: false,
@@ -42,8 +38,7 @@ impl<'a> HttpResponse<'a> {
         return Self {
             version: request.version(),
             code: HttpResponseCode::Ok,
-            header: HashMap::new(),
-            header_str: HashMap::new(),
+            header: HttpResponseHeader::new(),
             writer: writer,
             buffer: vec![],
             header_only: request.method() == HttpMethod::HEAD,
@@ -64,19 +59,33 @@ impl<'a> Write for HttpResponse<'a> {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.set_header(&content_length(
+        self.set_header(content_length(
             self.buffer.iter().map(|b| b.len()).sum::<usize>(),
         ));
-        self.set_header(&date(SystemTime::now()));
+        self.set_header(date(SystemTime::now()));
 
-        let mut buf_writer = BufWriter::with_capacity(1 << 15, &mut self.writer);
+        let mut header_lines: Vec<&str> = vec![];
+        let status_line = format!("{} {}", self.version.clone(), self.code);
+        header_lines.push(status_line.as_str());
+        header_lines.push(LINE_END);
 
-        let mut written = buf_writer.write(format!("{} {}", self.version, self.code).as_bytes())?;
-        written += buf_writer.write(LINE_END)?;
-        written += Self::write_header(&self.header, &self.header_str, &mut buf_writer)?;
+        for i in self.header.into_iter() {
+            header_lines.push(i.key_str());
+            header_lines.push(KV_SEP);
+            header_lines.push(i.value().to_str());
+            header_lines.push(LINE_END);
+        }
+
+        let written = self.writer.write_vectored(
+            &header_lines
+                .iter()
+                .map(|s| IoSlice::new(s.as_bytes()))
+                .collect::<Vec<_>>(),
+        )?;
+        self.writer.write(LINE_END.as_bytes())?;
 
         if self.header_only {
-            buf_writer.flush()?;
+            self.writer.flush()?;
             self.written = written;
             return Ok(());
         }
@@ -84,10 +93,10 @@ impl<'a> Write for HttpResponse<'a> {
         let data: Vec<IoSlice<'_>> = self.buffer.iter().map(|b| IoSlice::new(&b)).collect();
 
         let mut writer: Box<dyn Write> = match self.header.get("Content-Encoding") {
-            Some(v) if *v.to_string() == "gzip" => {
-                Box::new(GzEncoder::new(buf_writer, Compression::default()))
+            Some(v) if v.to_str() == "gzip" => {
+                Box::new(GzEncoder::new(&mut self.writer, Compression::default()))
             }
-            _ => Box::new(buf_writer),
+            _ => Box::new(&mut self.writer),
         };
         let body_written = writer.write_vectored(&data)?;
 
@@ -102,74 +111,25 @@ pub trait HeaderSetter<T> {
     fn set_header(&mut self, header: T);
 }
 
-impl<'a> HeaderSetter<&HttpHeader> for HttpResponse<'a> {
-    fn set_header(&mut self, header: &HttpHeader) {
-        let value = header.value().clone();
-        if let Some(key) = header.key_str() {
-            self.header.insert(key, value);
-        } else if let Some(key) = header.key_string() {
-            self.header_str.insert(key, value);
-        }
+impl<'a> HeaderSetter<HttpHeader> for HttpResponse<'a> {
+    fn set_header(&mut self, header: HttpHeader) {
+        self.header.add(header);
     }
 }
 
-const LINE_END: &[u8] = "\r\n".as_bytes();
-const KV_SEP: &[u8] = ": ".as_bytes();
+const LINE_END: &str = "\r\n";
+const KV_SEP: &str = ": ";
 
 impl HttpResponse<'_> {
     pub fn set_response_code(&mut self, code: HttpResponseCode) {
         self.code = code;
-    }
-
-    pub fn write_header(
-        header: &HashMap<&'static str, Rc<dyn crate::http::header::ToString>>,
-        header_str: &HashMap<Rc<String>, Rc<dyn crate::http::header::ToString>>,
-        writer: &mut BufWriter<&mut Box<dyn Write + '_>>,
-    ) -> std::io::Result<usize> {
-        let mut written = 0;
-        if !header.is_empty() {
-            for (key, value) in header.clone().into_iter() {
-                written += Self::write_header_value(
-                    writer,
-                    &key.as_bytes(),
-                    value.to_string().as_bytes(),
-                )?;
-            }
-        }
-
-        if !header_str.is_empty() {
-            for (key, value) in header_str.clone().into_iter() {
-                written += Self::write_header_value(
-                    writer,
-                    &key.as_bytes(),
-                    value.to_string().as_bytes(),
-                )?;
-            }
-        }
-
-        written += writer.write(LINE_END)?;
-
-        return Ok(written);
-    }
-
-    fn write_header_value(
-        writer: &mut BufWriter<&mut Box<dyn Write + '_>>,
-        k: &[u8],
-        v: &[u8],
-    ) -> std::io::Result<usize> {
-        let mut written = writer.write(k)?;
-        written += writer.write(KV_SEP)?;
-        written += writer.write(v)?;
-        written += writer.write(LINE_END)?;
-
-        return Ok(written);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::header::HttpHeaderValue;
+    use crate::http::header::{HttpHeaderValue, content_encoding};
     use flate2::read::GzDecoder;
     use std::io::Read;
 
@@ -184,9 +144,7 @@ mod tests {
                 HttpResponse::new(HttpVersion::default(), Box::new(&mut output_buffer));
 
             // Content-Encoding 헤더를 gzip으로 설정
-            response.set_header(&crate::http::header::content_encoding(
-                HttpHeaderValue::Str("gzip"),
-            ));
+            response.set_header(content_encoding(HttpHeaderValue::Str("gzip")));
 
             // 테스트 데이터 작성
             let test_data = b"Hello, this is a test message for gzip encoding!";
@@ -255,9 +213,7 @@ mod tests {
             let mut response =
                 HttpResponse::new(HttpVersion::default(), Box::new(&mut output_buffer));
 
-            response.set_header(&crate::http::header::content_encoding(
-                HttpHeaderValue::Str("gzip"),
-            ));
+            response.set_header(content_encoding(HttpHeaderValue::Str("gzip")));
 
             // 반복되는 큰 데이터 (압축이 잘 될 것으로 예상)
             response.write(test_data.as_bytes()).unwrap();

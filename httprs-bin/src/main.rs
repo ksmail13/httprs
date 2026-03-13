@@ -28,7 +28,7 @@ const BUF_SIZE: usize = 1024;
 impl Handler for SimpleHandler {
     fn handle(&self, req: &mut HttpRequest, res: &mut HttpResponse) {
         res.set_response_code(HttpResponseCode::Ok);
-        res.set_header(&content_type(HttpHeaderValue::Str("text/plain")));
+        res.set_header(content_type(HttpHeaderValue::Str("text/plain")));
 
         if let Err(e) = writeln!(res, "Echo response") {
             log::error!("error {}", e);
