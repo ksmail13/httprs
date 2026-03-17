@@ -36,59 +36,34 @@ impl Date {
 
         Date {
             year: years as u32,
-            month: months as u8 % 12,
-            day: days as u8 % 30,
-            hour: epoch_hours as u8 % 24,
-            minute: epoch_mins as u8 % 60,
-            second: epoch_secs as u8 % 60,
+            month: months as u8,
+            day: days as u8,
+            hour: (epoch_hours % 24) as u8,
+            minute: (epoch_mins % 60) as u8,
+            second: (epoch_secs % 60) as u8,
             epoch_days,
         }
     }
 
-    const MONTH: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    const MONTH: [&str; 13] = [
+        "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-
-    const MONTH_DATE: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-    const MONTH_DATE_LEAP: [u64; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
     const WEEK_DAY: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
 
-    fn is_leap_year(year: u64) -> bool {
-        year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-    }
-
     fn year_and_date(dates: u64) -> (u64, u64, u64) {
-        let mut cnt = dates;
-        let mut year = 1970;
-        let mut month = 0;
-        loop {
-            let whole_year = if Date::is_leap_year(year) { 366 } else { 365 };
-
-            if cnt < whole_year {
-                break;
-            }
-            cnt -= whole_year;
-            year += 1;
-        }
-
-        let months = if Date::is_leap_year(year) {
-            Date::MONTH_DATE_LEAP
-        } else {
-            Date::MONTH_DATE
-        };
-
-        loop {
-            let month_days = months[month as usize];
-            if cnt < month_days {
-                break;
-            }
-            cnt -= month_days;
-            month += 1;
-        }
-
-        (year, month, cnt + 1)
+        // Shift epoch from 1970-01-01 to 0000-03-01 layout
+        let z = dates + 719468;
+        let era = z / 146097;
+        let doe = z - era * 146097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let year = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = year + if m <= 2 { 1 } else { 0 };
+        (year, m, d)
     }
 
     fn write_to_buf(&self, buf: &mut [u8; 29]) {
@@ -138,5 +113,56 @@ impl Display for Date {
         self.write_to_buf(&mut buf);
         let s = unsafe { std::str::from_utf8_unchecked(&buf) };
         f.write_str(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_year_and_date_epoch() {
+        let (y, m, d) = Date::year_and_date(0);
+        assert_eq!(y, 1970);
+        assert_eq!(m, 1); // Jan
+        assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn test_date_from_system_time() {
+        let d = Date::from_system_time(UNIX_EPOCH);
+        assert_eq!(d.year, 1970);
+        assert_eq!(d.month, 1);
+        assert_eq!(d.day, 1);
+        assert_eq!(d.hour, 0);
+        assert_eq!(d.minute, 0);
+        assert_eq!(d.second, 0);
+
+        // test to_rfc1123
+        assert_eq!(d.to_rfc1123(), "Thu, 01 Jan 1970 00:00:00 GMT");
+        assert_eq!(d.to_string(), "Thu, 01 Jan 1970 00:00:00 GMT");
+    }
+
+    #[test]
+    fn test_rfc1123_format() {
+        // 2024-02-28T12:00:00Z -> epoch diff is 19781 days + 12 hours
+        let time = UNIX_EPOCH + Duration::from_secs(1709121600);
+        let d = Date::from_system_time(time);
+        assert_eq!(d.year, 2024);
+        assert_eq!(d.month, 2); // Feb = 1
+        assert_eq!(d.day, 28);
+        assert_eq!(d.hour, 12);
+        assert_eq!(d.minute, 0);
+        assert_eq!(d.second, 0);
+        assert_eq!(d.to_rfc1123(), "Wed, 28 Feb 2024 12:00:00 GMT");
+
+        // leap year: 2024-02-29T00:00:00Z
+        let time2 = UNIX_EPOCH + Duration::from_secs(1709164800);
+        let d2 = Date::from_system_time(time2);
+        assert_eq!(d2.year, 2024);
+        assert_eq!(d2.month, 2); // Feb
+        assert_eq!(d2.day, 29);
+        assert_eq!(d2.to_rfc1123(), "Thu, 29 Feb 2024 00:00:00 GMT");
     }
 }
