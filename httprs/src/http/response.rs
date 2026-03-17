@@ -1,5 +1,5 @@
 use std::{
-    io::{IoSlice, Write},
+    io::{BufWriter, Write},
     time::SystemTime,
 };
 
@@ -16,7 +16,7 @@ pub struct HttpResponse<'a> {
     code: HttpResponseCode,
     header: HttpResponseHeader,
     writer: Box<dyn Write + 'a>,
-    buffer: Vec<Vec<u8>>,
+    buffer: Vec<u8>,
     header_only: bool,
     written: usize,
 }
@@ -53,54 +53,49 @@ impl<'a> HttpResponse<'a> {
 
 impl<'a> Write for HttpResponse<'a> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.push(buf.to_vec());
-
+        self.buffer.extend_from_slice(buf);
         return Ok(buf.len());
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.set_header(content_length(
-            self.buffer.iter().map(|b| b.len()).sum::<usize>(),
-        ));
-        self.set_header(date(SystemTime::now()));
-
-        let mut header_lines: Vec<&str> = vec![];
-        let status_line = format!("{} {}", self.version.clone(), self.code);
-        header_lines.push(status_line.as_str());
-        header_lines.push(LINE_END);
-
-        for i in self.header.into_iter() {
-            header_lines.push(i.key_str());
-            header_lines.push(KV_SEP);
-            header_lines.push(i.value().to_str());
-            header_lines.push(LINE_END);
+        match self.header.get("Content-Encoding") {
+            Some(v) if v.to_str() == "gzip" => {
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&self.buffer)?;
+                self.buffer = encoder.finish()?;
+            }
+            _ => {}
         }
 
-        let written = self.writer.write_vectored(
-            &header_lines
-                .iter()
-                .map(|s| IoSlice::new(s.as_bytes()))
-                .collect::<Vec<_>>(),
-        )?;
-        self.writer.write(LINE_END.as_bytes())?;
+        self.set_header(content_length(self.buffer.len()));
+        self.set_header(date(SystemTime::now()));
+
+        let mut buf_writer = BufWriter::with_capacity(1 << 15, &mut self.writer);
+        let status_line = format!("{} {}{}", self.version, self.code, LINE_END);
+        buf_writer.write_all(status_line.as_bytes())?;
+        let mut written = status_line.len();
+
+        for i in self.header.into_iter() {
+            buf_writer.write_all(i.key_str().as_bytes())?;
+            buf_writer.write_all(KV_SEP.as_bytes())?;
+            buf_writer.write_all(i.value().to_str().as_bytes())?;
+            buf_writer.write_all(LINE_END.as_bytes())?;
+            written += i.key_str().len() + KV_SEP.len() + i.value().to_str().len() + LINE_END.len();
+        }
+
+        buf_writer.write_all(LINE_END.as_bytes())?;
+        written += LINE_END.len();
 
         if self.header_only {
-            self.writer.flush()?;
+            buf_writer.flush()?;
             self.written = written;
             return Ok(());
         }
 
-        let data: Vec<IoSlice<'_>> = self.buffer.iter().map(|b| IoSlice::new(&b)).collect();
+        buf_writer.write_all(&self.buffer)?;
+        let body_written = self.buffer.len();
 
-        let mut writer: Box<dyn Write> = match self.header.get("Content-Encoding") {
-            Some(v) if v.to_str() == "gzip" => {
-                Box::new(GzEncoder::new(&mut self.writer, Compression::default()))
-            }
-            _ => Box::new(&mut self.writer),
-        };
-        let body_written = writer.write_vectored(&data)?;
-
-        writer.flush()?;
+        buf_writer.flush()?;
         self.written = written + body_written;
         Ok(())
     }
