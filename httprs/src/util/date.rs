@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fmt::Display,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug)]
 pub struct Date {
@@ -88,18 +91,52 @@ impl Date {
         (year, month, cnt + 1)
     }
 
+    fn write_to_buf(&self, buf: &mut [u8; 29]) {
+        buf[0..3].copy_from_slice(Date::WEEK_DAY[(self.epoch_days % 7) as usize].as_bytes());
+        buf[3..5].copy_from_slice(b", ");
+
+        buf[5] = b'0' + (self.day / 10);
+        buf[6] = b'0' + (self.day % 10);
+
+        buf[8..11].copy_from_slice(Date::MONTH[self.month as usize].as_bytes());
+
+        let mut y = self.year;
+        buf[15] = b'0' + (y % 10) as u8;
+        y /= 10;
+        buf[14] = b'0' + (y % 10) as u8;
+        y /= 10;
+        buf[13] = b'0' + (y % 10) as u8;
+        y /= 10;
+        buf[12] = b'0' + (y % 10) as u8;
+
+        buf[17] = b'0' + (self.hour / 10);
+        buf[18] = b'0' + (self.hour % 10);
+        buf[19] = b':';
+
+        buf[20] = b'0' + (self.minute / 10);
+        buf[21] = b'0' + (self.minute % 10);
+        buf[22] = b':';
+
+        buf[23] = b'0' + (self.second / 10);
+        buf[24] = b'0' + (self.second % 10);
+
+        buf[25..29].copy_from_slice(b" GMT");
+    }
+
     // make SystemTime to rfc1123-date
-    // Mon, 22 Nov 1990 GMT
+    // Mon, 22 Nov 1990 00:00:00 GMT
     pub fn to_rfc1123(&self) -> String {
-        format!(
-            "{}, {:02} {:02} {:04} {:02}:{:02}:{:02} GMT",
-            Date::WEEK_DAY[(self.epoch_days % 7) as usize],
-            self.day,
-            Date::MONTH[self.month as usize],
-            self.year,
-            self.hour,
-            self.minute,
-            self.second,
-        )
+        let mut buf = [b' '; 29];
+        self.write_to_buf(&mut buf);
+        unsafe { String::from_utf8_unchecked(buf.to_vec()) }
+    }
+}
+
+impl Display for Date {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = [b' '; 29];
+        self.write_to_buf(&mut buf);
+        let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+        f.write_str(s)
     }
 }
