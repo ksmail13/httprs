@@ -7,39 +7,23 @@ use std::{
     time::Duration,
 };
 
-use nix::{
-    libc::{self, siginfo_t},
-    sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction},
-    unistd::getpid,
+use nix::sys::{
+    epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
+    signal::{SigSet, Signal::SIGINT},
+    signalfd::{SfdFlags, SignalFd},
 };
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::server::Error;
 use crate::worker::Worker;
 
-static mut RUNNING: bool = true;
+fn register_signal() -> Result<SignalFd, &'static str> {
+    let mut sigset = SigSet::empty();
 
-extern "C" fn tcpworker_exit_signal_handler(sig_no: i32, si: *mut siginfo_t, _: *mut libc::c_void) {
-    unsafe { RUNNING = false };
+    sigset.add(SIGINT);
 
-    let pid = getpid();
-    let si_code = (unsafe { *si }).si_code;
-    log::trace!(target:"tcpworker_exit_signal_handler", "{sig_no}/{si_code} received in TcpWorker[{pid}]");
-}
-
-fn register_signal() {
-    if let Err(e) = unsafe {
-        sigaction(
-            Signal::SIGINT,
-            &SigAction::new(
-                SigHandler::SigAction(tcpworker_exit_signal_handler),
-                SaFlags::SA_SIGINFO,
-                SigSet::empty(),
-            ),
-        )
-    } {
-        log::error!(target: "WorkerManager.run", "sigaction failed: {e}");
-    }
+    sigset.thread_block().map_err(|e| e.desc())?;
+    SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK).map_err(|e| e.desc())
 }
 
 pub struct TcpWorker {
@@ -50,28 +34,52 @@ pub struct TcpWorker {
 
 pub struct TcpWorkerContext {
     pub listener: TcpListener,
+    pub signal_fd: SignalFd,
 }
 
 impl Worker for TcpWorker {
     type Context = TcpWorkerContext;
 
     fn run(&self, context: &mut Self::Context) {
-        while unsafe { RUNNING } {
-            let stream_result = context.listener.accept();
+        let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
+        epoll
+            .add(&context.signal_fd, EpollEvent::new(EpollFlags::EPOLLIN, 0))
+            .unwrap();
+        epoll
+            .add(&context.listener, EpollEvent::new(EpollFlags::EPOLLIN, 1))
+            .unwrap();
 
-            match stream_result {
-                Ok((stream, client)) => {
-                    let _ = stream.set_write_timeout(Some(Duration::from_millis(self.timeout_ms)));
-                    let process_result = self.tcp_process.process(stream, &client);
-                    match process_result {
-                        Ok((r, w)) => log::info!("{} r:{} o:{}", client, r, w),
-                        Err(err) => log::warn!("process failed {:?}", err),
+        loop {
+            let mut events = vec![EpollEvent::empty(); 1024];
+            let events_count = epoll.wait(&mut events, 1000 as u16).unwrap();
+
+            for i in 0..events_count {
+                let event = events[i];
+                if event.data() == 1 {
+                    let stream_result = context.listener.accept();
+
+                    match stream_result {
+                        Ok((stream, client)) => {
+                            let _ = stream
+                                .set_write_timeout(Some(Duration::from_millis(self.timeout_ms)));
+                            let process_result = self.tcp_process.process(stream, &client);
+                            match process_result {
+                                Ok((r, w)) => log::info!("{} r:{} o:{}", client, r, w),
+                                Err(err) => log::warn!("process failed {:?}", err),
+                            }
+                        }
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => (),
+                        Err(err) => {
+                            log::error!(target: "TcpWorker::run", "Accept failed: {err}");
+                            exit(1);
+                        }
                     }
-                }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => (),
-                Err(err) => {
-                    log::error!(target: "TcpWorker::run", "Accept failed: {err}");
-                    exit(1);
+                } else if event.data() == 0 {
+                    log::trace!(target: "TcpWorker::run", "Signal received");
+                    if let Ok(Some(sig_info)) = context.signal_fd.read_signal() {
+                        log::trace!(target: "TcpWorker::run", "{:?}", sig_info);
+                    }
+                    return;
                 }
             }
         }
@@ -98,9 +106,12 @@ impl Worker for TcpWorker {
             .unwrap();
         let listener = socket.into();
 
-        register_signal();
+        let signal_fd = register_signal().unwrap();
 
-        return Self::Context { listener };
+        return Self::Context {
+            listener,
+            signal_fd,
+        };
     }
 
     fn cleanup(&self, _: &mut Self::Context) {
