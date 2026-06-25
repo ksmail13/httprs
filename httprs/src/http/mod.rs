@@ -19,6 +19,7 @@ use crate::{
 
 pub mod handler;
 pub mod header;
+pub mod multipart;
 pub mod request;
 pub mod response;
 pub mod value;

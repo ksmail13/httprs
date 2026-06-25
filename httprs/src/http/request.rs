@@ -12,7 +12,7 @@ pub struct HttpRequest<'a> {
     path: String,
     header: HashMap<&'a str, Vec<&'a str>>,
     param: HashMap<&'a str, Vec<&'a str>>,
-    reader: Box<dyn Read + 'a>,
+    reader: Box<dyn Read + 'a>, 
     // TODO : 필요한건 나중에 추가
 }
 
