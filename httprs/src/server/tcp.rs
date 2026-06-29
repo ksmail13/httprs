@@ -49,8 +49,8 @@ impl Worker for TcpWorker {
             .add(&context.listener, EpollEvent::new(EpollFlags::EPOLLIN, 1))
             .unwrap();
 
+        let mut events = vec![EpollEvent::empty(); 1024];
         loop {
-            let mut events = vec![EpollEvent::empty(); 1024];
             let events_count = epoll.wait(&mut events, 1000 as u16).unwrap();
 
             for i in 0..events_count {
