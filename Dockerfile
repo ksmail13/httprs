@@ -9,7 +9,7 @@ COPY httprs-bin/  httprs-bin/
 
 RUN cargo build --profile release
 
-FROM docker.io/library/rockylinux:8
+FROM debian:trixie
 
 RUN useradd -m runner
 USER runner
