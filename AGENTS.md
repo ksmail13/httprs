@@ -2,41 +2,8 @@
 
 ## Overview
 
-`agent` is a lightweight HTTP server written in Rust that demonstrates a **Prefork Multi‑Process Model** similar to the classic Apache MPM Prefork.  
-It spawns a configurable number of worker processes that listen on a single TCP port and accept connections concurrently. The worker processes communicate with the parent via `fork` and `wait` system calls, handling each connection independently.
-
-```
-
-## Project Structure
-
-```
-server_rs/
-├── src/
-│   ├── args.rs              # CLI arguments
-│   ├── main.rs              # Application entry point
-│   ├── server/
-│   │   └── mod.rs           # Server and worker group orchestration
-│   ├── worker/
-│   │   ├── error.rs         # Errors used by the worker manager
-│   │   ├── group.rs         # `WorkerGroup` abstraction
-│   │   ├── helper.rs        # Forking / cleanup utilities
-│   │   ├── manager.rs       # Manager that keeps child processes alive
-│   │   ├── mod.rs           # Public worker trait
-│   │   └── tcp.rs           # TCP worker implementation
-│   ├── http/
-│   │   ├── header.rs        # Header utilities
-│   │   ├── http.rs          # `Http1` process implementation
-│   │   ├── request.rs       # `HttpRequest` type
-│   │   ├── response.rs      # `HttpResponse` type
-│   │   ├── value.rs         # HTTP enums & errors
-│   │   └── mod.rs
-│   └── process/
-│       ├── echo.rs          # Example Echo process
-│       └── mod.rs
-├── Cargo.toml
-├── Cargo.lock
-└── README.md
-```
+`httprs` is a lightweight HTTP server. 
+It aims to provide predictable HTTP server behavior without requiring external runtimes like tokio or async-std yet. 
 
 ## Key Components
 
@@ -67,18 +34,13 @@ pub trait Worker {
 }
 ```
 
-### 5. `TcpWorker` (`worker/tcp.rs`)
-
-* Listens on the shared `TcpListener` sockets.
-* Accepts connections and hands them off to the `Process` implementation (`Http1` or `EchoProcess`).
-
-### 6. `Http1` Process (`http/http.rs`)
+### 5. `Http1` Process (`http/http.rs`)
 
 * Implements the `Process` trait for handling HTTP/1.x requests.
 * Parses request line, headers, and query parameters.
 * Uses a `Handler` implementation to generate a response.
 
-### 7. `Handler` Trait (`http/handler.rs`)
+### 6. `Handler` Trait (`http/handler.rs`)
 
 ```rust
 pub trait Handler {
@@ -88,7 +50,7 @@ pub trait Handler {
 
 The `SimpleHandler` in `main.rs` is a minimal example that echoes request headers back.
 
-### 8. `EchoProcess` (`process/echo.rs`)
+### 7. `EchoProcess` (`process/echo.rs`)
 
 * A simple echo server used in tests.
 * Demonstrates how to implement a custom `Process`.
@@ -136,11 +98,3 @@ cargo test
 * `colog` – Structured logging.
 * `nix` – Low‑level Unix syscalls.
 * `env_logger` – Log initialization.
-
-## License
-
-This project is licensed under the MIT license. Refer to `LICENSE` file in the repository root.
-
---- 
-
-Feel free to customize the handler or worker logic to fit your specific use case.
