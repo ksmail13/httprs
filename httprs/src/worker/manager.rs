@@ -26,7 +26,7 @@ impl<'a, T: ChildManager> WorkerManager<'a, T> {
         };
     }
 
-    pub fn start(&self) -> Vec<(&WorkerGroup, Vec<Pid>)> {
+    pub fn start(&self) -> Vec<(&WorkerGroup<'a>, Vec<Pid>)> {
         let mut vec = vec![];
         for g in &self.groups {
             let mut pids = vec![];
@@ -50,7 +50,7 @@ impl<'a, T: ChildManager> WorkerManager<'a, T> {
 
     fn collect_and_fork(
         &self,
-        group: &WorkerGroup,
+        group: &WorkerGroup<'a>,
         pids: &mut Vec<Pid>,
         pid: Pid,
     ) -> Result<Option<Pid>, Error> {
@@ -64,7 +64,7 @@ impl<'a, T: ChildManager> WorkerManager<'a, T> {
         return self.manager.make_child(group).map(|p: Pid| Some(p));
     }
 
-    pub fn run(&self, vec: &mut Vec<(&WorkerGroup, Vec<Pid>)>) {
+    pub fn run(&self, vec: &mut Vec<(&WorkerGroup<'a>, Vec<Pid>)>) {
         let sigaction = unsafe {
             let mut sigset = SigSet::empty();
             sigset.add(Signal::SIGINT);

@@ -23,12 +23,15 @@ pub mod request;
 pub mod response;
 pub mod value;
 
-pub struct Http1<'a> {
+pub struct Http1<T: Handler> {
     max_header_length: usize,
-    handler: &'a (dyn Handler + 'a),
+    handler: T,
 }
 
-impl Process for Http1<'_> {
+impl<T> Process for Http1<T>
+where
+    T: Handler,
+{
     fn process(
         &self,
         stream: TcpStream,
@@ -85,18 +88,21 @@ impl Process for Http1<'_> {
     }
 }
 
-impl<'a> Http1<'a> {
-    pub fn new(max_header_length: usize, handler: &'a dyn Handler) -> Self {
+impl<T> Http1<T>
+where
+    T: Handler,
+{
+    pub fn new(max_header_length: usize, handler: T) -> Self {
         return Http1 {
             max_header_length,
             handler,
         };
     }
 
-    fn read_header<'b>(
+    fn read_header<'a>(
         &self,
         client_addr: &SocketAddr,
-        reader: &mut Box<dyn Read + 'b>,
+        reader: &mut Box<dyn Read + 'a>,
     ) -> Result<(usize, ReadHeaderResult), Error> {
         let mut res = vec![];
         let mut readed = 0;
@@ -146,13 +152,13 @@ impl<'a> Http1<'a> {
     /**
      * Read header part of HTTP request
      */
-    fn init_request<'b>(
-        &'a self,
-        client_addr: &'b std::net::SocketAddr,
-        lines: &'b Vec<String>,
+    fn init_request<'a>(
+        &self,
+        client_addr: &'a std::net::SocketAddr,
+        lines: &'a Vec<String>,
         remain: Cursor<Vec<u8>>,
-        reader: Box<dyn Read + 'b>,
-    ) -> Result<HttpRequest<'b>, Error> {
+        reader: Box<dyn Read + 'a>,
+    ) -> Result<HttpRequest<'a>, Error> {
         let raw_header = &lines;
         let buf = raw_header[0].trim();
 
@@ -178,7 +184,7 @@ impl<'a> Http1<'a> {
 
         let body_reader = BodyReader { remain, reader };
 
-        let body_reader: Box<dyn Read + 'b> = if content_encoding == "gzip" {
+        let body_reader: Box<dyn Read + 'a> = if content_encoding == "gzip" {
             Box::new(GzDecoder::new(body_reader))
         } else {
             Box::new(body_reader)
@@ -195,7 +201,7 @@ impl<'a> Http1<'a> {
         ));
     }
 
-    fn init_header<'b>(&self, reader: &'b Vec<String>) -> HashMap<&'b str, Vec<&'b str>> {
+    fn init_header<'a>(&self, reader: &'a Vec<String>) -> HashMap<&'a str, Vec<&'a str>> {
         let mut header_map: HashMap<&str, Vec<&str>> = HashMap::new();
         for i in 1..reader.len() {
             let buf = reader[i].trim();

@@ -4,7 +4,6 @@ use httprs::server::tcp::TcpWorker;
 use nix::unistd::{getpid, gettid};
 use std::cmp::min;
 use std::io::{Read, Write};
-use std::rc::Rc;
 
 use httprs::{
     http::{
@@ -102,13 +101,15 @@ fn main() {
     let arg = Args::parse();
     log::info!("httprs: {:?}", arg);
 
+    let processor = Http1::new(arg.max_header_size, SimpleHandler);
+    let worker = TcpWorker::new(
+        arg.timeout_ms,
+        format!("{}:{}", arg.host, arg.port),
+        &processor,
+    );
     let worker_infos = vec![ServerWorkerInfo {
         worker_count: arg.worker,
-        worker: Rc::new(TcpWorker::new(
-            arg.timeout_ms,
-            format!("{}:{}", arg.host, arg.port),
-            Rc::new(Http1::new(arg.max_header_size, SimpleHandler)),
-        )),
+        worker: &worker,
     }];
 
     let mut server = Server::new(ServerArgs {
