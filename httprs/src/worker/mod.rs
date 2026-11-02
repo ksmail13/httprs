@@ -1,4 +1,4 @@
-use std::{any::Any, rc::Rc};
+use std::any::Any;
 
 mod error;
 pub mod helper;
@@ -39,14 +39,14 @@ where
     }
 }
 
-pub struct WorkerGroup {
+pub struct WorkerGroup<'a> {
     pub count: u32,
     /* It is occur dynamic dispatch, but it will be called one time after fork */
-    pub worker: Rc<dyn AnyWorker>,
+    pub worker: &'a (dyn AnyWorker + 'a),
 }
 
-impl WorkerGroup {
-    pub fn new(count: u32, worker: Rc<dyn AnyWorker>) -> Self {
+impl<'a> WorkerGroup<'a> {
+    pub fn new(count: u32, worker: &'a (dyn AnyWorker + 'a)) -> Self {
         return Self {
             count: count,
             worker: worker,

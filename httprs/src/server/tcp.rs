@@ -3,7 +3,6 @@ use std::{
     io::ErrorKind,
     net::{SocketAddr, TcpListener, TcpStream},
     process::exit,
-    rc::Rc,
     time::Duration,
 };
 
@@ -26,9 +25,9 @@ fn register_signal() -> Result<SignalFd, &'static str> {
     SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK).map_err(|e| e.desc())
 }
 
-pub struct TcpWorker {
+pub struct TcpWorker<'a> {
     timeout_ms: u64,
-    tcp_process: Rc<dyn Process>,
+    tcp_process: &'a (dyn Process + 'a),
     host: String,
 }
 
@@ -37,7 +36,7 @@ pub struct TcpWorkerContext {
     pub signal_fd: SignalFd,
 }
 
-impl Worker for TcpWorker {
+impl Worker for TcpWorker<'_> {
     type Context = TcpWorkerContext;
 
     fn run(&self, context: &mut Self::Context) {
@@ -121,8 +120,8 @@ impl Worker for TcpWorker {
     }
 }
 
-impl TcpWorker {
-    pub fn new(timeout_ms: u64, host: String, tcp_process: Rc<dyn Process>) -> Self {
+impl<'a> TcpWorker<'a> {
+    pub fn new(timeout_ms: u64, host: String, tcp_process: &'a (dyn Process + 'a)) -> Self {
         return Self {
             timeout_ms,
             tcp_process,

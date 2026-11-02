@@ -23,15 +23,12 @@ pub mod request;
 pub mod response;
 pub mod value;
 
-pub struct Http1<T: Handler> {
+pub struct Http1<'a> {
     max_header_length: usize,
-    handler: T,
+    handler: &'a (dyn Handler + 'a),
 }
 
-impl<T> Process for Http1<T>
-where
-    T: Handler,
-{
+impl Process for Http1<'_> {
     fn process(
         &self,
         stream: TcpStream,
@@ -88,21 +85,18 @@ where
     }
 }
 
-impl<T> Http1<T>
-where
-    T: Handler,
-{
-    pub fn new(max_header_length: usize, handler: T) -> Self {
+impl<'a> Http1<'a> {
+    pub fn new(max_header_length: usize, handler: &'a dyn Handler) -> Self {
         return Http1 {
             max_header_length,
             handler,
         };
     }
 
-    fn read_header<'a>(
+    fn read_header<'b>(
         &self,
         client_addr: &SocketAddr,
-        reader: &mut Box<dyn Read + 'a>,
+        reader: &mut Box<dyn Read + 'b>,
     ) -> Result<(usize, ReadHeaderResult), Error> {
         let mut res = vec![];
         let mut readed = 0;
@@ -152,13 +146,13 @@ where
     /**
      * Read header part of HTTP request
      */
-    fn init_request<'a>(
-        &self,
-        client_addr: &'a std::net::SocketAddr,
-        lines: &'a Vec<String>,
+    fn init_request<'b>(
+        &'a self,
+        client_addr: &'b std::net::SocketAddr,
+        lines: &'b Vec<String>,
         remain: Cursor<Vec<u8>>,
-        reader: Box<dyn Read + 'a>,
-    ) -> Result<HttpRequest<'a>, Error> {
+        reader: Box<dyn Read + 'b>,
+    ) -> Result<HttpRequest<'b>, Error> {
         let raw_header = &lines;
         let buf = raw_header[0].trim();
 
@@ -184,7 +178,7 @@ where
 
         let body_reader = BodyReader { remain, reader };
 
-        let body_reader: Box<dyn Read + 'a> = if content_encoding == "gzip" {
+        let body_reader: Box<dyn Read + 'b> = if content_encoding == "gzip" {
             Box::new(GzDecoder::new(body_reader))
         } else {
             Box::new(body_reader)
@@ -201,7 +195,7 @@ where
         ));
     }
 
-    fn init_header<'a>(&self, reader: &'a Vec<String>) -> HashMap<&'a str, Vec<&'a str>> {
+    fn init_header<'b>(&self, reader: &'b Vec<String>) -> HashMap<&'b str, Vec<&'b str>> {
         let mut header_map: HashMap<&str, Vec<&str>> = HashMap::new();
         for i in 1..reader.len() {
             let buf = reader[i].trim();
@@ -358,7 +352,7 @@ mod test {
         use crate::http::Http1;
         use std::net::SocketAddr;
 
-        let http1 = Http1::new(1024, DummyHandler);
+        let http1 = Http1::new(1024, &DummyHandler);
         let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
         let header_data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nBody";
@@ -382,7 +376,7 @@ mod test {
         use crate::http::Http1;
         use std::net::SocketAddr;
 
-        let http1 = Http1::new(10, DummyHandler);
+        let http1 = Http1::new(10, &DummyHandler);
         let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
         let header_data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nBody";
@@ -398,7 +392,7 @@ mod test {
         use crate::http::Http1;
         use std::net::SocketAddr;
 
-        let http1 = Http1::new(1024, DummyHandler);
+        let http1 = Http1::new(1024, &DummyHandler);
         let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
         let header_data = b"GET / HTTP/1.1\r\nHost: localhost\n\nBody";

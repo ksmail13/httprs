@@ -1,25 +1,23 @@
-use std::rc::Rc;
-
 use crate::worker::{AnyWorker, WorkerGroup, helper::ProcessManager, manager::WorkerManager};
 
 pub mod tcp;
 
-pub struct ServerWorkerInfo {
+pub struct ServerWorkerInfo<'a> {
     pub worker_count: u32,
-    pub worker: Rc<dyn AnyWorker>,
+    pub worker: &'a (dyn AnyWorker + 'a),
 }
 
-pub struct ServerArgs {
-    pub worker_infos: Vec<ServerWorkerInfo>,
+pub struct ServerArgs<'a> {
+    pub worker_infos: Vec<ServerWorkerInfo<'a>>,
     pub timeout_ms: u64,
 }
 
-pub struct Server {
-    config: ServerArgs,
+pub struct Server<'a> {
+    config: ServerArgs<'a>,
 }
 
-impl Server {
-    pub fn new(config: ServerArgs) -> Self {
+impl<'a> Server<'a> {
+    pub fn new(config: ServerArgs<'a>) -> Self {
         Self { config }
     }
 
@@ -29,7 +27,7 @@ impl Server {
         let group: Vec<WorkerGroup> = config
             .worker_infos
             .iter()
-            .map(|i| WorkerGroup::new(i.worker_count, i.worker.clone()))
+            .map(|i| WorkerGroup::new(i.worker_count, i.worker))
             .collect();
 
         let manager = WorkerManager::new(group, ProcessManager {});
