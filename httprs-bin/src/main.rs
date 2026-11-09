@@ -80,7 +80,7 @@ impl Handler for SimpleHandler {
 
 fn main() {
     colog::basic_builder()
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log::LevelFilter::Warn)
         .format(|f, record| {
             writeln!(
                 f,

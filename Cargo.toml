@@ -5,5 +5,11 @@ members = [
 ]
 resolver = "2"
 
+[profile.dev]
+debug = true
+strip = "none"
+
 [profile.release]
 debug = true
+strip = "none"
+

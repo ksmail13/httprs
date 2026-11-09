@@ -1,5 +1,6 @@
 use crate::worker::{AnyWorker, WorkerGroup, helper::ProcessManager, manager::WorkerManager};
 
+pub mod acceptor;
 pub mod tcp;
 
 pub struct ServerWorkerInfo<'a> {
