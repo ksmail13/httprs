@@ -235,3 +235,176 @@ impl<'a> KqueueAcceptor<'a> {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::sys::signal::{SigSet, Signal};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    #[cfg(any(target_os = "linux"))]
+    type PlatformAcceptor<'a> = EpollAcceptor<'a>;
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    type PlatformAcceptor<'a> = KqueueAcceptor<'a>;
+
+    fn create_nonblocking_listener() -> TcpListener {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        listener
+    }
+
+    fn send_test_signal(sig: Signal) {
+        #[cfg(any(target_os = "linux"))]
+        nix::sys::signal::raise(sig).unwrap();
+
+        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        nix::sys::signal::kill(nix::unistd::getpid(), sig).unwrap();
+    }
+
+    #[test]
+    fn test_accept_error_display_and_traits() {
+        let poll_err = AcceptError::PollError(Errno::EINVAL);
+        assert_eq!(
+            format!("{}", poll_err),
+            format!("poll error with code: {}", Errno::EINVAL)
+        );
+
+        let accept_err = AcceptError::AcceptError(Errno::EAGAIN);
+        assert_eq!(
+            format!("{}", accept_err),
+            format!("accept error with code: {}", Errno::EAGAIN)
+        );
+
+        let cloned = poll_err;
+        assert_eq!(poll_err, cloned);
+        assert_ne!(poll_err, accept_err);
+
+        let err_ref: &dyn std::error::Error = &poll_err;
+        assert!(err_ref.source().is_none());
+    }
+
+    #[test]
+    fn test_acceptor_timeout() {
+        let listener = create_nonblocking_listener();
+        let sigset = SigSet::empty();
+        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+
+        let events = acceptor.accept(50).unwrap();
+        assert!(
+            events.is_empty() || events.iter().all(|e| matches!(e, Accepted::Timeout)),
+            "Expected empty or Timeout events on timeout"
+        );
+    }
+
+    #[test]
+    fn test_acceptor_single_connection() {
+        let listener = create_nonblocking_listener();
+        let addr = listener.local_addr().unwrap();
+        let sigset = SigSet::empty();
+        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.write_all(b"ping").unwrap();
+
+        let events = acceptor.accept(500).unwrap();
+        assert_eq!(events.len(), 1);
+
+        match &events[0] {
+            Accepted::Connection((stream, peer_addr)) => {
+                assert_eq!(*peer_addr, client.local_addr().unwrap());
+                let mut stream_clone = stream.try_clone().unwrap();
+                let mut buf = [0u8; 4];
+                stream_clone.read_exact(&mut buf).unwrap();
+                assert_eq!(&buf, b"ping");
+            }
+            _ => panic!("Expected Accepted::Connection"),
+        }
+    }
+
+    #[test]
+    fn test_acceptor_multiple_connections() {
+        let listener = create_nonblocking_listener();
+        let addr = listener.local_addr().unwrap();
+        let sigset = SigSet::empty();
+        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+
+        let mut client1 = TcpStream::connect(addr).unwrap();
+        let mut client2 = TcpStream::connect(addr).unwrap();
+        client1.write_all(b"one").unwrap();
+        client2.write_all(b"two").unwrap();
+
+        let mut accepted_addrs = Vec::new();
+        for _ in 0..2 {
+            let events = acceptor.accept(500).unwrap();
+            for event in events {
+                if let Accepted::Connection((_, peer_addr)) = event {
+                    accepted_addrs.push(peer_addr);
+                }
+            }
+            if accepted_addrs.len() == 2 {
+                break;
+            }
+        }
+
+        assert_eq!(accepted_addrs.len(), 2);
+        assert!(accepted_addrs.contains(&client1.local_addr().unwrap()));
+        assert!(accepted_addrs.contains(&client2.local_addr().unwrap()));
+    }
+
+    #[test]
+    fn test_acceptor_signal() {
+        let listener = create_nonblocking_listener();
+        let mut sigset = SigSet::empty();
+        sigset.add(Signal::SIGURG);
+        sigset.thread_block().unwrap();
+
+        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+
+        send_test_signal(Signal::SIGURG);
+
+        let events = acceptor.accept(500).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Accepted::Signal(Signal::SIGURG))),
+            "Expected Accepted::Signal(SIGURG)"
+        );
+    }
+
+    #[test]
+    fn test_acceptor_connection_and_signal() {
+        let listener = create_nonblocking_listener();
+        let addr = listener.local_addr().unwrap();
+        let mut sigset = SigSet::empty();
+        sigset.add(Signal::SIGWINCH);
+        sigset.thread_block().unwrap();
+
+        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+
+        let _client = TcpStream::connect(addr).unwrap();
+        send_test_signal(Signal::SIGWINCH);
+
+        let mut got_connection = false;
+        let mut got_signal = false;
+
+        for _ in 0..2 {
+            let events = acceptor.accept(500).unwrap();
+            for event in events {
+                match event {
+                    Accepted::Connection(_) => got_connection = true,
+                    Accepted::Signal(Signal::SIGWINCH) => got_signal = true,
+                    _ => {}
+                }
+            }
+            if got_connection && got_signal {
+                break;
+            }
+        }
+
+        assert!(got_connection, "Expected Accepted::Connection");
+        assert!(got_signal, "Expected Accepted::Signal(SIGWINCH)");
+    }
+}
+
