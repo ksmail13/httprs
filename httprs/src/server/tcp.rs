@@ -27,7 +27,7 @@ fn register_signal() -> SigSet {
     let mut sigset = SigSet::empty();
 
     sigset.add(SIGINT);
-
+    sigset.thread_block().expect("Signal must block");
     return sigset;
 }
 
