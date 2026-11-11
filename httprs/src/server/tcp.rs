@@ -60,8 +60,10 @@ impl Worker for TcpWorker<'_> {
                         match event {
                             Accepted::Connection((stream, addr)) => {
                                 let timeout = Some(Duration::from_millis(self.timeout_ms));
-                                let _ = stream.set_read_timeout(timeout);
                                 let _ = stream.set_write_timeout(timeout);
+                                stream
+                                    .set_nonblocking(false)
+                                    .expect("accepted stream must blocking");
                                 let process_result = self.tcp_process.process(stream, &addr);
                                 match process_result {
                                     Ok((r, w)) => log::info!("{} r:{} o:{}", addr, r, w),
