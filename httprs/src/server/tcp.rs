@@ -5,28 +5,30 @@ use std::{
     time::Duration,
 };
 
-use nix::sys::{
-    signal::{SigSet, Signal::SIGINT},
-    signalfd::{SfdFlags, SignalFd},
-};
+use nix::sys::signal::{SigSet, Signal::SIGINT};
 use socket2::{Domain, Protocol, Socket, Type};
+
+#[cfg(any(target_os = "macos"))]
+use crate::server::acceptor::KqueueAcceptor;
+
+#[cfg(any(target_os = "linux"))]
+use crate::server::acceptor::EpollAcceptor;
 
 use crate::server::{
     Error,
     acceptor::{
         Accepted::{self},
-        Acceptor, EpollAcceptor,
+        Acceptor,
     },
 };
 use crate::worker::Worker;
 
-fn register_signal() -> Result<SignalFd, &'static str> {
+fn register_signal() -> SigSet {
     let mut sigset = SigSet::empty();
 
     sigset.add(SIGINT);
 
-    sigset.thread_block().map_err(|e| e.desc())?;
-    SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK).map_err(|e| e.desc())
+    return sigset;
 }
 
 pub struct TcpWorker<'a> {
@@ -37,7 +39,7 @@ pub struct TcpWorker<'a> {
 
 pub struct TcpWorkerContext {
     pub listener: TcpListener,
-    pub signal_fd: SignalFd,
+    pub sigset: SigSet,
 }
 
 impl Worker for TcpWorker<'_> {
@@ -45,7 +47,10 @@ impl Worker for TcpWorker<'_> {
 
     fn run(&self, context: &mut Self::Context) {
         #[cfg(any(target_os = "linux"))]
-        let acceptor = EpollAcceptor::new(&context.listener, &context.signal_fd).unwrap();
+        let acceptor = EpollAcceptor::new(&context.listener, &context.sigset).unwrap();
+
+        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        let acceptor = KqueueAcceptor::new(&context.listener, &context.sigset).unwrap();
 
         loop {
             match acceptor.accept(1000 as u16) {
@@ -100,12 +105,9 @@ impl Worker for TcpWorker<'_> {
             .unwrap();
         let listener = socket.into();
 
-        let signal_fd = register_signal().unwrap();
+        let sigset = register_signal();
 
-        return Self::Context {
-            listener,
-            signal_fd,
-        };
+        return Self::Context { listener, sigset };
     }
 
     fn cleanup(&self, _: &mut Self::Context) {

@@ -1,7 +1,7 @@
 use args::Args;
 use clap::Parser;
 use httprs::server::tcp::TcpWorker;
-use nix::unistd::{getpid, gettid};
+use nix::unistd::getpid;
 use std::cmp::min;
 use std::io::{Read, Write};
 
@@ -84,12 +84,11 @@ fn main() {
         .format(|f, record| {
             writeln!(
                 f,
-                "{} [{:>25}:{:4}] [{:>6}:{:>6}] [{}]\t{} {}",
+                "{} [{:>25}:{:4}] [{:>6}] [{}]\t{} {}",
                 Date::from_system_time(std::time::SystemTime::now()).to_rfc1123(),
                 record.file().unwrap_or(""),
                 record.line().unwrap_or(0),
                 getpid(),
-                gettid(),
                 record.level(),
                 record.target(),
                 record.args()
