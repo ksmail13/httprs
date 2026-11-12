@@ -47,10 +47,10 @@ impl Worker for TcpWorker<'_> {
 
     fn run(&self, context: &mut Self::Context) {
         #[cfg(any(target_os = "linux"))]
-        let acceptor = EpollAcceptor::new(&context.listener, &context.sigset).unwrap();
+        let mut acceptor = EpollAcceptor::new(&context.listener, &context.sigset).unwrap();
 
         #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-        let acceptor = KqueueAcceptor::new(&context.listener, &context.sigset).unwrap();
+        let mut acceptor = KqueueAcceptor::new(&context.listener, &context.sigset).unwrap();
 
         loop {
             match acceptor.accept(1000 as u16) {

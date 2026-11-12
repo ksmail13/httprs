@@ -1,6 +1,8 @@
 use std::io::ErrorKind::WouldBlock;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-use std::{ffi::c_long, os::fd::AsRawFd};
+use std::os::fd::{AsRawFd, IntoRawFd};
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+use std::{ffi::c_long, os::fd::FromRawFd};
 use std::{
     fmt::Display,
     net::{SocketAddr, TcpListener, TcpStream},
@@ -45,7 +47,7 @@ pub enum Accepted {
 }
 
 pub trait Acceptor {
-    fn accept(&self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError>;
+    fn accept(&mut self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError>;
 }
 
 #[cfg(any(target_os = "linux"))]
@@ -57,7 +59,7 @@ pub struct EpollAcceptor<'a> {
 
 #[cfg(any(target_os = "linux"))]
 impl Acceptor for EpollAcceptor<'_> {
-    fn accept(&self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError> {
+    fn accept(&mut self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError> {
         let mut events = [EpollEvent::empty(); 2];
 
         let num_events = match self.epoll.wait(&mut events, timeout_ms) {
@@ -124,30 +126,37 @@ pub struct KqueueAcceptor<'a> {
     kqueue: Kqueue,
     tcp_listener: &'a TcpListener,
     sigset: &'a SigSet,
+    new_conn: Vec<TcpStream>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 impl Acceptor for KqueueAcceptor<'_> {
-    fn accept(&self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError> {
-        let ev = [];
-        let mut ret_ev = [
-            KEvent::new(
-                0,
-                EventFilter::EVFILT_AIO,
-                EvFlags::empty(),
-                FilterFlag::empty(),
-                0,
-                0,
-            ),
-            KEvent::new(
-                0,
-                EventFilter::EVFILT_AIO,
-                EvFlags::empty(),
-                FilterFlag::empty(),
-                0,
-                0,
-            ),
-        ];
+    fn accept(&mut self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError> {
+        let ev: Vec<KEvent> = self
+            .new_conn
+            .drain(0..)
+            .into_iter()
+            .map(|stream| {
+                let raw_fd = stream.into_raw_fd();
+                KEvent::new(
+                    raw_fd as usize,
+                    EventFilter::EVFILT_READ,
+                    EvFlags::EV_ADD | EvFlags::EV_ENABLE,
+                    FilterFlag::empty(),
+                    0,
+                    0,
+                )
+            })
+            .collect();
+
+        let mut ret_ev = [KEvent::new(
+            0,
+            EventFilter::EVFILT_AIO,
+            EvFlags::empty(),
+            FilterFlag::empty(),
+            0,
+            0,
+        ); 1024];
 
         let ev_cnt = self
             .kqueue
@@ -161,29 +170,46 @@ impl Acceptor for KqueueAcceptor<'_> {
             )
             .map_err(|e| AcceptError::PollError(e))?;
 
-        return ret_ev[..ev_cnt]
-            .iter()
-            .map(|event| {
-                let event_filter = event.filter().map_err(|e| AcceptError::PollError(e))?;
-                if event_filter == EventFilter::EVFILT_SIGNAL {
-                    let signal = Signal::try_from(event.ident() as i32)
-                        .map_err(|e| AcceptError::AcceptError(e))?;
-                    return Ok(Accepted::Signal(signal));
-                }
+        let mut result = Vec::with_capacity(ev_cnt);
 
-                let accept_res = self.tcp_listener.accept();
-                if let Err(e) = accept_res {
-                    if e.kind() == WouldBlock {
-                        return Ok(Accepted::Timeout);
-                    } else {
-                        return Err(AcceptError::AcceptError(Errno::from_raw(
-                            e.raw_os_error().unwrap_or_default(),
-                        )));
+        for i in 0..ev_cnt {
+            let event = ret_ev[i];
+            let event_filter = event.filter().map_err(|e| AcceptError::PollError(e))?;
+            if event_filter == EventFilter::EVFILT_SIGNAL {
+                let signal = Signal::try_from(event.ident() as i32)
+                    .map_err(|e| AcceptError::AcceptError(e))?;
+                result.push(Accepted::Signal(signal));
+                continue;
+            }
+
+            if event.ident() == self.tcp_listener.as_raw_fd().try_into().unwrap() {
+                match self.tcp_listener.accept() {
+                    Err(e) => {
+                        if e.kind() == WouldBlock {
+                            result.push(Accepted::Timeout);
+                        } else {
+                            return Err(AcceptError::AcceptError(Errno::from_raw(
+                                e.raw_os_error().unwrap_or_default(),
+                            )));
+                        }
+                    }
+                    Ok(accept) => {
+                        self.new_conn.push(accept.0);
                     }
                 }
-                return Ok(Accepted::Connection(accept_res.unwrap()));
-            })
-            .collect();
+
+                continue;
+            }
+
+            let stream_fd = event.ident().try_into().expect("must valid fd");
+            let stream = unsafe { TcpStream::from_raw_fd(stream_fd) };
+            let peer_addr = stream.peer_addr().map_err(|e| {
+                AcceptError::AcceptError(Errno::from_raw(e.raw_os_error().unwrap_or_default()))
+            })?;
+            result.push(Accepted::Connection((stream, peer_addr)));
+        }
+
+        return Ok(result);
     }
 }
 
@@ -232,16 +258,25 @@ impl<'a> KqueueAcceptor<'a> {
             kqueue,
             tcp_listener,
             sigset,
+            new_conn: Vec::new(),
         });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use nix::sys::signal::{SigSet, Signal};
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use nix::{
+        errno::Errno,
+        sys::signal::{SigSet, Signal},
+    };
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+    };
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    use crate::server::acceptor::KqueueAcceptor;
+    use crate::server::acceptor::{AcceptError, Accepted, Acceptor};
 
     #[cfg(any(target_os = "linux"))]
     type PlatformAcceptor<'a> = EpollAcceptor<'a>;
@@ -407,4 +442,3 @@ mod tests {
         assert!(got_signal, "Expected Accepted::Signal(SIGWINCH)");
     }
 }
-
