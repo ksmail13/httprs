@@ -72,7 +72,7 @@ where
                 server::Error::ParseFail(e.to_string())
             })?;
         let mut response = HttpResponse::from_request(&request, Box::new(&stream));
-        response.set_header(server(HttpHeaderValue::Str("server_rs")));
+        response.set_header(server(HttpHeaderValue::Str("httprs")));
 
         self.handler.handle(&mut request, &mut response);
 
