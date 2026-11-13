@@ -301,6 +301,8 @@ mod tests {
         net::{TcpListener, TcpStream},
     };
 
+    #[cfg(any(target_os = "linux"))]
+    use crate::server::acceptor::EpollAcceptor;
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     use crate::server::acceptor::KqueueAcceptor;
     use crate::server::acceptor::{AcceptError, Accepted, Acceptor};
