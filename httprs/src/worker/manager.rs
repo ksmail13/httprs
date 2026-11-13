@@ -13,20 +13,20 @@ extern "C" fn sigint_handler(_: i32) {
     unsafe { RUNNING = false };
 }
 
-pub struct WorkerManager<T: ChildManager> {
-    groups: Vec<WorkerGroup>,
+pub struct WorkerManager<'a, T: ChildManager> {
+    groups: Vec<WorkerGroup<'a>>,
     manager: T,
 }
 
-impl<T: ChildManager> WorkerManager<T> {
-    pub fn new(groups: Vec<WorkerGroup>, manager: T) -> Self {
+impl<'a, T: ChildManager> WorkerManager<'a, T> {
+    pub fn new(groups: Vec<WorkerGroup<'a>>, manager: T) -> Self {
         return Self {
             groups: groups,
             manager: manager,
         };
     }
 
-    pub fn start(&self) -> Vec<(&WorkerGroup, Vec<Pid>)> {
+    pub fn start(&self) -> Vec<(&WorkerGroup<'a>, Vec<Pid>)> {
         let mut vec = vec![];
         for g in &self.groups {
             let mut pids = vec![];
@@ -50,7 +50,7 @@ impl<T: ChildManager> WorkerManager<T> {
 
     fn collect_and_fork(
         &self,
-        group: &WorkerGroup,
+        group: &WorkerGroup<'a>,
         pids: &mut Vec<Pid>,
         pid: Pid,
     ) -> Result<Option<Pid>, Error> {
@@ -64,7 +64,7 @@ impl<T: ChildManager> WorkerManager<T> {
         return self.manager.make_child(group).map(|p: Pid| Some(p));
     }
 
-    pub fn run(&self, vec: &mut Vec<(&WorkerGroup, Vec<Pid>)>) {
+    pub fn run(&self, vec: &mut Vec<(&WorkerGroup<'a>, Vec<Pid>)>) {
         let sigaction = unsafe {
             let mut sigset = SigSet::empty();
             sigset.add(Signal::SIGINT);
@@ -146,20 +146,19 @@ impl<T: ChildManager> WorkerManager<T> {
 
 #[cfg(test)]
 mod test {
-    use std::{rc::Rc, time::Duration};
-
     use nix::{
-        sys::{
-            signal::{SigEvent, SigevNotify, Signal},
-            timer::{Expiration::OneShot, Timer, TimerSetTimeFlags},
-        },
-        time::ClockId,
+        libc::{ITIMER_REAL, itimerval, setitimer, timeval},
+        sys::signal::{Signal, kill},
         unistd::getpid,
     };
 
     use crate::worker::{Worker, helper::ProcessManager};
 
     use super::*;
+
+    extern "C" fn sigalrm_handler(_: i32) {
+        let _ = kill(getpid(), Signal::SIGINT);
+    }
 
     struct SleepWorker {}
 
@@ -187,27 +186,39 @@ mod test {
             .format_timestamp_millis()
             .filter_level(log::LevelFilter::Trace)
             .init();
-        let group = WorkerGroup::new(1, Rc::new(SleepWorker {}));
+        let group = WorkerGroup::new(1, &SleepWorker {});
         let manager = WorkerManager::new(vec![group], ProcessManager {});
         let mut group_vec = manager.start();
         let pid = getpid();
         log::debug!(target: "test_manager", "start {pid}");
 
-        let mut timer = Timer::new(
-            ClockId::CLOCK_MONOTONIC,
-            SigEvent::new(SigevNotify::SigevSignal {
-                signal: Signal::SIGINT,
-                si_value: 0,
-            }),
-        )
-        .unwrap();
-        let res = timer.set(
-            OneShot(Duration::from_millis(500).into()),
-            TimerSetTimeFlags::empty(),
+        let mut sigset = SigSet::empty();
+        sigset.add(Signal::SIGALRM);
+        let sig_action = SigAction::new(
+            SigHandler::Handler(sigalrm_handler),
+            SaFlags::SA_ONSTACK,
+            sigset,
         );
+        if let Err(err) = unsafe { sigaction(Signal::SIGALRM, &sig_action) } {
+            log::error!(target: "test_manager", "sigaction failed {err}");
+        }
 
-        if let Err(err) = res {
-            log::error!(target: "test_manager", "set timer failed {err}");
+        let timer = itimerval {
+            it_interval: timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            it_value: timeval {
+                tv_sec: 0,
+                tv_usec: 500_000,
+            },
+        };
+        if unsafe { setitimer(ITIMER_REAL, &timer, std::ptr::null_mut()) } != 0 {
+            log::error!(
+                target: "test_manager",
+                "set timer failed {}",
+                Errno::last()
+            );
         }
         manager.run(&mut group_vec);
     }

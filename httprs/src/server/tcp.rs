@@ -2,83 +2,87 @@ use std::{
     fmt::Display,
     io::ErrorKind,
     net::{SocketAddr, TcpListener, TcpStream},
-    process::exit,
-    rc::Rc,
     time::Duration,
 };
 
-use nix::sys::{
-    epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
-    signal::{SigSet, Signal::SIGINT},
-    signalfd::{SfdFlags, SignalFd},
-};
+use nix::sys::signal::{SigSet, Signal::SIGINT};
 use socket2::{Domain, Protocol, Socket, Type};
 
-use crate::server::Error;
+#[cfg(any(target_os = "macos"))]
+use crate::server::acceptor::KqueueAcceptor;
+
+#[cfg(any(target_os = "linux"))]
+use crate::server::acceptor::EpollAcceptor;
+
+use crate::server::{
+    Error,
+    acceptor::{
+        Accepted::{self},
+        Acceptor,
+    },
+};
 use crate::worker::Worker;
 
-fn register_signal() -> Result<SignalFd, &'static str> {
+fn register_signal() -> SigSet {
     let mut sigset = SigSet::empty();
 
     sigset.add(SIGINT);
-
-    sigset.thread_block().map_err(|e| e.desc())?;
-    SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK).map_err(|e| e.desc())
+    sigset.thread_block().expect("Signal must block");
+    return sigset;
 }
 
-pub struct TcpWorker {
+pub struct TcpWorker<'a> {
     timeout_ms: u64,
-    tcp_process: Rc<dyn Process>,
+    tcp_process: &'a (dyn Process + 'a),
     host: String,
 }
 
 pub struct TcpWorkerContext {
     pub listener: TcpListener,
-    pub signal_fd: SignalFd,
+    pub sigset: SigSet,
 }
 
-impl Worker for TcpWorker {
+impl Worker for TcpWorker<'_> {
     type Context = TcpWorkerContext;
 
     fn run(&self, context: &mut Self::Context) {
-        let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
-        epoll
-            .add(&context.signal_fd, EpollEvent::new(EpollFlags::EPOLLIN, 0))
-            .unwrap();
-        epoll
-            .add(&context.listener, EpollEvent::new(EpollFlags::EPOLLIN, 1))
-            .unwrap();
+        #[cfg(any(target_os = "linux"))]
+        let mut acceptor = EpollAcceptor::new(&context.listener, &context.sigset).unwrap();
+
+        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        let mut acceptor = KqueueAcceptor::new(&context.listener, &context.sigset).unwrap();
 
         loop {
-            let mut events = vec![EpollEvent::empty(); 1024];
-            let events_count = epoll.wait(&mut events, 1000 as u16).unwrap();
-
-            for i in 0..events_count {
-                let event = events[i];
-                if event.data() == 1 {
-                    let stream_result = context.listener.accept();
-
-                    match stream_result {
-                        Ok((stream, client)) => {
-                            let _ = stream
-                                .set_write_timeout(Some(Duration::from_millis(self.timeout_ms)));
-                            let process_result = self.tcp_process.process(stream, &client);
-                            match process_result {
-                                Ok((r, w)) => log::info!("{} r:{} o:{}", client, r, w),
-                                Err(err) => log::warn!("process failed {:?}", err),
+            match acceptor.accept(1000 as u16) {
+                Ok(accepted) => {
+                    log::trace!(target: "TcpWorker::run", "Accepted event: {}", &accepted.len());
+                    for event in accepted {
+                        match event {
+                            Accepted::Ready((stream, addr)) => {
+                                let timeout = Some(Duration::from_millis(self.timeout_ms));
+                                let _ = stream.set_write_timeout(timeout);
+                                stream
+                                    .set_nonblocking(false)
+                                    .expect("accepted stream must blocking");
+                                let process_result = self.tcp_process.process(stream, &addr);
+                                match process_result {
+                                    Ok((r, w)) => log::info!("{} r:{} o:{}", addr, r, w),
+                                    Err(err) => log::warn!("process failed {:?}", err),
+                                }
                             }
-                        }
-                        Err(err) if err.kind() == ErrorKind::WouldBlock => (),
-                        Err(err) => {
-                            log::error!(target: "TcpWorker::run", "Accept failed: {err}");
-                            exit(1);
+                            Accepted::Signal(signal_info) => {
+                                log::trace!(target: "TcpWorker::run", "Signal received {:?}", signal_info);
+                                return;
+                            }
+                            Accepted::Connected(addr) => {
+                                log::trace!(target: "TcpWorker::run", "Connected: {}", addr);
+                            }
+                            Accepted::Timeout => (),
                         }
                     }
-                } else if event.data() == 0 {
-                    log::trace!(target: "TcpWorker::run", "Signal received");
-                    if let Ok(Some(sig_info)) = context.signal_fd.read_signal() {
-                        log::trace!(target: "TcpWorker::run", "{:?}", sig_info);
-                    }
+                }
+                Err(err) => {
+                    log::trace!(target: "TcpWorker::run", "Accept failed: {}", err);
                     return;
                 }
             }
@@ -93,7 +97,7 @@ impl Worker for TcpWorker {
 
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
         socket
-            .set_read_timeout(Some(Duration::from_millis(1000)))
+            .set_nonblocking(true)
             .and_then(|_| socket.set_reuse_address(true))
             .and_then(|_| socket.set_reuse_port(true))
             .and_then(|_| {
@@ -106,12 +110,9 @@ impl Worker for TcpWorker {
             .unwrap();
         let listener = socket.into();
 
-        let signal_fd = register_signal().unwrap();
+        let sigset = register_signal();
 
-        return Self::Context {
-            listener,
-            signal_fd,
-        };
+        return Self::Context { listener, sigset };
     }
 
     fn cleanup(&self, _: &mut Self::Context) {
@@ -121,8 +122,8 @@ impl Worker for TcpWorker {
     }
 }
 
-impl TcpWorker {
-    pub fn new(timeout_ms: u64, host: String, tcp_process: Rc<dyn Process>) -> Self {
+impl<'a> TcpWorker<'a> {
+    pub fn new(timeout_ms: u64, host: String, tcp_process: &'a (dyn Process + 'a)) -> Self {
         return Self {
             timeout_ms,
             tcp_process,
@@ -177,7 +178,7 @@ mod test {
 
         let mut v = vec![0; written + 6];
         client.read_exact(&mut v).unwrap();
-        let received = String::from_utf8(v).unwrap();
+        let received = String::from_utf8_lossy(&v);
         println!("received : {}", received);
         assert_eq!("test: echo".to_string(), received);
 

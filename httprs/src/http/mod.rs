@@ -358,7 +358,7 @@ mod test {
         use crate::http::Http1;
         use std::net::SocketAddr;
 
-        let http1 = Http1::new(1024, DummyHandler);
+        let http1 = Http1::new(1024, &DummyHandler);
         let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
         let header_data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nBody";
@@ -382,7 +382,7 @@ mod test {
         use crate::http::Http1;
         use std::net::SocketAddr;
 
-        let http1 = Http1::new(10, DummyHandler);
+        let http1 = Http1::new(10, &DummyHandler);
         let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
         let header_data = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nBody";
@@ -398,7 +398,7 @@ mod test {
         use crate::http::Http1;
         use std::net::SocketAddr;
 
-        let http1 = Http1::new(1024, DummyHandler);
+        let http1 = Http1::new(1024, &DummyHandler);
         let client_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
         let header_data = b"GET / HTTP/1.1\r\nHost: localhost\n\nBody";
