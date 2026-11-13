@@ -58,7 +58,7 @@ impl Worker for TcpWorker<'_> {
                     log::trace!(target: "TcpWorker::run", "Accepted event: {}", &accepted.len());
                     for event in accepted {
                         match event {
-                            Accepted::Connection((stream, addr)) => {
+                            Accepted::Ready((stream, addr)) => {
                                 let timeout = Some(Duration::from_millis(self.timeout_ms));
                                 let _ = stream.set_write_timeout(timeout);
                                 stream
@@ -73,6 +73,9 @@ impl Worker for TcpWorker<'_> {
                             Accepted::Signal(signal_info) => {
                                 log::trace!(target: "TcpWorker::run", "Signal received {:?}", signal_info);
                                 return;
+                            }
+                            Accepted::Connected(addr) => {
+                                log::trace!(target: "TcpWorker::run", "Connected: {}", addr);
                             }
                             Accepted::Timeout => (),
                         }

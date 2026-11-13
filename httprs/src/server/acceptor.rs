@@ -1,8 +1,7 @@
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+use std::ffi::c_long;
 use std::io::ErrorKind::WouldBlock;
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
-use std::os::fd::{AsRawFd, IntoRawFd};
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
-use std::{ffi::c_long, os::fd::FromRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::{
     fmt::Display,
     net::{SocketAddr, TcpListener, TcpStream},
@@ -41,13 +40,15 @@ impl Display for AcceptError {
 }
 
 pub enum Accepted {
-    Connection((TcpStream, SocketAddr)),
+    Connected(SocketAddr),
+    Ready((TcpStream, SocketAddr)),
     Signal(Signal),
     Timeout,
 }
 
 pub trait Acceptor {
     fn accept(&mut self, timeout_ms: u16) -> Result<Vec<Accepted>, AcceptError>;
+    fn register(&mut self, tcp_stream: TcpStream) -> Result<(), Errno>;
 }
 
 #[cfg(any(target_os = "linux"))]
@@ -82,8 +83,10 @@ impl Acceptor for EpollAcceptor<'_> {
                         )));
                     }
                     let (tcp_stream, socket_addr) = accept_res.unwrap();
-                    Ok(Accepted::Connection((tcp_stream, socket_addr)))
-                } else {
+                    self.register(tcp_stream)
+                        .map_err(|e| AcceptError::PollError(e))?;
+                    Ok(Accepted::Connected(socket_addr))
+                } else if e.data() == 1 {
                     let sig = self
                         .signal_fd
                         .read_signal()
@@ -91,9 +94,29 @@ impl Acceptor for EpollAcceptor<'_> {
                     let signal = Signal::try_from(sig.expect("signal must exist").ssi_signo as i32)
                         .map_err(|e| AcceptError::AcceptError(e))?;
                     Ok(Accepted::Signal(signal))
+                } else {
+                    let stream_fd = e.data() as i32;
+                    let stream = unsafe { TcpStream::from_raw_fd(stream_fd) };
+                    let _ = self.epoll.delete(&stream);
+                    let peer_addr = stream.peer_addr().map_err(|e| {
+                        AcceptError::AcceptError(Errno::from_raw(
+                            e.raw_os_error().unwrap_or_default(),
+                        ))
+                    })?;
+                    Ok(Accepted::Ready((stream, peer_addr)))
                 }
             })
             .collect()
+    }
+
+    fn register(&mut self, tcp_stream: TcpStream) -> Result<(), Errno> {
+        let raw_fd = tcp_stream.as_raw_fd() as u64;
+        let res = self.epoll.add(
+            &tcp_stream,
+            EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLONESHOT, raw_fd),
+        );
+        let _ = tcp_stream.into_raw_fd();
+        return res;
     }
 }
 
@@ -125,7 +148,6 @@ impl<'a> EpollAcceptor<'a> {
 pub struct KqueueAcceptor<'a> {
     kqueue: Kqueue,
     tcp_listener: &'a TcpListener,
-    sigset: &'a SigSet,
     new_conn: Vec<TcpStream>,
 }
 
@@ -141,7 +163,7 @@ impl Acceptor for KqueueAcceptor<'_> {
                 KEvent::new(
                     raw_fd as usize,
                     EventFilter::EVFILT_READ,
-                    EvFlags::EV_ADD | EvFlags::EV_ENABLE,
+                    EvFlags::EV_ADD | EvFlags::EV_ENABLE | EvFlags::EV_ONESHOT,
                     FilterFlag::empty(),
                     0,
                     0,
@@ -194,7 +216,8 @@ impl Acceptor for KqueueAcceptor<'_> {
                         }
                     }
                     Ok(accept) => {
-                        self.new_conn.push(accept.0);
+                        let _ = self.register(accept.0);
+                        result.push(Accepted::Connected(accept.1));
                     }
                 }
 
@@ -206,10 +229,15 @@ impl Acceptor for KqueueAcceptor<'_> {
             let peer_addr = stream.peer_addr().map_err(|e| {
                 AcceptError::AcceptError(Errno::from_raw(e.raw_os_error().unwrap_or_default()))
             })?;
-            result.push(Accepted::Connection((stream, peer_addr)));
+            result.push(Accepted::Ready((stream, peer_addr)));
         }
 
         return Ok(result);
+    }
+
+    fn register(&mut self, tcp_stream: TcpStream) -> Result<(), Errno> {
+        self.new_conn.push(tcp_stream);
+        return Ok(());
     }
 }
 
@@ -257,7 +285,6 @@ impl<'a> KqueueAcceptor<'a> {
         return Ok(Self {
             kqueue,
             tcp_listener,
-            sigset,
             new_conn: Vec::new(),
         });
     }
@@ -324,7 +351,7 @@ mod tests {
     fn test_acceptor_timeout() {
         let listener = create_nonblocking_listener();
         let sigset = SigSet::empty();
-        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+        let mut acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
 
         let events = acceptor.accept(50).unwrap();
         assert!(
@@ -338,23 +365,30 @@ mod tests {
         let listener = create_nonblocking_listener();
         let addr = listener.local_addr().unwrap();
         let sigset = SigSet::empty();
-        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+        let mut acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
 
         let mut client = TcpStream::connect(addr).unwrap();
         client.write_all(b"ping").unwrap();
+
+        let connected_events = acceptor.accept(500).unwrap();
+        assert_eq!(connected_events.len(), 1);
+        assert!(matches!(
+            &connected_events[0],
+            Accepted::Connected(peer_addr) if *peer_addr == client.local_addr().unwrap()
+        ));
 
         let events = acceptor.accept(500).unwrap();
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Accepted::Connection((stream, peer_addr)) => {
+            Accepted::Ready((stream, peer_addr)) => {
                 assert_eq!(*peer_addr, client.local_addr().unwrap());
                 let mut stream_clone = stream.try_clone().unwrap();
                 let mut buf = [0u8; 4];
                 stream_clone.read_exact(&mut buf).unwrap();
                 assert_eq!(&buf, b"ping");
             }
-            _ => panic!("Expected Accepted::Connection"),
+            _ => panic!("Expected Accepted::Ready"),
         }
     }
 
@@ -363,18 +397,19 @@ mod tests {
         let listener = create_nonblocking_listener();
         let addr = listener.local_addr().unwrap();
         let sigset = SigSet::empty();
-        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+        let mut acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
 
         let mut client1 = TcpStream::connect(addr).unwrap();
         let mut client2 = TcpStream::connect(addr).unwrap();
         client1.write_all(b"one").unwrap();
         client2.write_all(b"two").unwrap();
 
+        let _ = acceptor.accept(500).unwrap();
         let mut accepted_addrs = Vec::new();
         for _ in 0..2 {
             let events = acceptor.accept(500).unwrap();
             for event in events {
-                if let Accepted::Connection((_, peer_addr)) = event {
+                if let Accepted::Ready((_, peer_addr)) = event {
                     accepted_addrs.push(peer_addr);
                 }
             }
@@ -395,7 +430,7 @@ mod tests {
         sigset.add(Signal::SIGURG);
         sigset.thread_block().unwrap();
 
-        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+        let mut acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
 
         send_test_signal(Signal::SIGURG);
 
@@ -416,7 +451,7 @@ mod tests {
         sigset.add(Signal::SIGWINCH);
         sigset.thread_block().unwrap();
 
-        let acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
+        let mut acceptor = PlatformAcceptor::new(&listener, &sigset).unwrap();
 
         let _client = TcpStream::connect(addr).unwrap();
         send_test_signal(Signal::SIGWINCH);
@@ -424,11 +459,11 @@ mod tests {
         let mut got_connection = false;
         let mut got_signal = false;
 
-        for _ in 0..2 {
+        for _ in 0..4 {
             let events = acceptor.accept(500).unwrap();
             for event in events {
                 match event {
-                    Accepted::Connection(_) => got_connection = true,
+                    Accepted::Connected(_) => got_connection = true,
                     Accepted::Signal(Signal::SIGWINCH) => got_signal = true,
                     _ => {}
                 }
@@ -438,7 +473,7 @@ mod tests {
             }
         }
 
-        assert!(got_connection, "Expected Accepted::Connection");
+        assert!(got_connection, "Expected Accepted::Connected");
         assert!(got_signal, "Expected Accepted::Signal(SIGWINCH)");
     }
 }
