@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Cursor, Read, Write},
     net::{SocketAddr, TcpStream},
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use crate::{
@@ -14,7 +14,11 @@ use crate::{
         response::{HeaderSetter, HttpResponse},
         value::{Error, HttpMethod, HttpResponseCode, HttpVersion},
     },
-    server::{self, tcp::Process},
+    server::{
+        self,
+        Error::{IoFail, ParseFail},
+        tcp::{KeepAlive, Process, ProcessResult},
+    },
 };
 
 pub mod handler;
@@ -34,53 +38,44 @@ where
 {
     fn process(
         &self,
-        stream: TcpStream,
+        stream: &TcpStream,
         client_addr: &std::net::SocketAddr,
-    ) -> Result<(usize, usize), server::Error> {
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-        let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
+    ) -> Result<ProcessResult, server::Error> {
+        let mut reader: Box<dyn Read> = Box::new(stream);
+        let writer: Box<dyn Write> = Box::new(stream);
 
-        log::debug!(
-            "Client timeout: r: {:?}, w: {:?}",
-            stream
-                .read_timeout()
-                .unwrap_or_default()
-                .unwrap_or_default(),
-            stream
-                .write_timeout()
-                .unwrap_or_default()
-                .unwrap_or_default()
-        );
+        let read_header_res = self.read_header(client_addr, &mut reader);
+        if let Err(e) = read_header_res {
+            self.error_response_for_invalid_request(writer);
+            return Err(IoFail(
+                KeepAlive::Close,
+                format!("Read header failed: ({})", e),
+            ));
+        }
+        let (header_readed, headers) = read_header_res.unwrap();
 
-        let mut reader: Box<dyn Read> = Box::new(&stream);
+        let init_request_res =
+            self.init_request(client_addr, &headers.lines, headers.remain, reader);
+        if let Err(e) = init_request_res {
+            self.error_response_for_invalid_request(writer);
+            return Err(ParseFail(KeepAlive::Close, e.to_string()));
+        }
 
-        let (header_readed, headers) =
-            self.read_header(client_addr, &mut reader).map_err(|err| {
-                self.error_response_for_invalid_request(&stream);
-                server::Error::IoFail(format!("Read header failed: ({})", err))
-            })?;
-
-        let mut request = self
-            .init_request(
-                client_addr,
-                &headers.lines,
-                headers.remain,
-                Box::new(&stream),
-            )
-            .map_err(|e| {
-                self.error_response_for_invalid_request(&stream);
-                server::Error::ParseFail(e.to_string())
-            })?;
-        let mut response = HttpResponse::from_request(&request, Box::new(&stream));
+        let mut request = init_request_res.unwrap();
+        let mut response = HttpResponse::from_request(&request, writer);
         response.set_header(server(HttpHeaderValue::Str("httprs")));
 
         self.handler.handle(&mut request, &mut response);
 
         response
             .flush()
-            .map_err(|e| server::Error::IoFail(e.to_string()))?;
+            .map_err(|e| IoFail(KeepAlive::Close, e.to_string()))?;
 
-        Ok((header_readed, response.written()))
+        Ok(ProcessResult {
+            readed: header_readed,
+            written: response.written(),
+            keep_alive: KeepAlive::Close,
+        })
     }
 
     fn name(&self) -> String {
@@ -104,7 +99,7 @@ where
         client_addr: &SocketAddr,
         reader: &mut Box<dyn Read + 'a>,
     ) -> Result<(usize, ReadHeaderResult), Error> {
-        let mut res = vec![];
+        let mut lines = vec![];
         let mut readed = 0;
         let mut reader = BufReader::new(reader);
         loop {
@@ -133,20 +128,15 @@ where
 
             log::trace!("<< {}", buf);
 
-            res.push(buf);
+            lines.push(buf);
         }
 
         if readed == 0 {
             return Err(Error::ReadFail(format!("EOF")));
         }
 
-        return Ok((
-            readed,
-            ReadHeaderResult {
-                lines: res,
-                remain: Cursor::new(reader.buffer().to_vec()),
-            },
-        ));
+        let remain = Cursor::new(reader.buffer().to_vec());
+        return Ok((readed, ReadHeaderResult { lines, remain }));
     }
 
     /**
@@ -219,11 +209,11 @@ where
         return header_map;
     }
 
-    fn error_response_for_invalid_request(&self, stream: &TcpStream) {
-        let mut response = HttpResponse::new(HttpVersion::default(), Box::new(stream));
+    fn error_response_for_invalid_request<'a>(&self, stream: Box<dyn Write + 'a>) {
+        let mut response = HttpResponse::new(HttpVersion::default(), stream);
 
         response.set_response_code(HttpResponseCode::BadRequest);
-        response.set_header(server(HttpHeaderValue::Str("server_rs")));
+        response.set_header(server(HttpHeaderValue::Str("httprs")));
         response.set_header(content_type(HttpHeaderValue::Str("text/plain")));
         response.set_header(date(SystemTime::now()));
         let _ = response.write("Invalid request".as_bytes());

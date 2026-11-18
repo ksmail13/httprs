@@ -1,4 +1,9 @@
-use crate::worker::{AnyWorker, WorkerGroup, helper::ProcessManager, manager::WorkerManager};
+use std::fmt::Display;
+
+use crate::{
+    server::tcp::KeepAlive,
+    worker::{AnyWorker, WorkerGroup, helper::ProcessManager, manager::WorkerManager},
+};
 
 pub mod acceptor;
 pub mod tcp;
@@ -41,6 +46,26 @@ impl<'a> Server<'a> {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum Error {
-    ParseFail(String),
-    IoFail(String),
+    ParseFail(KeepAlive, String),
+    IoFail(KeepAlive, String),
+}
+
+impl std::error::Error for Error {}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ParseFail(_, m) => write!(f, "ParseFail : {}", m),
+            Self::IoFail(_, m) => write!(f, "IoFail : {}", m),
+        }
+    }
+}
+
+impl Into<KeepAlive> for Error {
+    fn into(self) -> KeepAlive {
+        match self {
+            Self::ParseFail(ka, _) => ka,
+            Self::IoFail(ka, _) => ka,
+        }
+    }
 }

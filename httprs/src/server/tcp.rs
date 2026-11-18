@@ -35,6 +35,7 @@ pub struct TcpWorker<'a> {
     timeout_ms: u64,
     tcp_process: &'a (dyn Process + 'a),
     host: String,
+    keep_alive: KeepAlive,
 }
 
 pub struct TcpWorkerContext {
@@ -64,11 +65,29 @@ impl Worker for TcpWorker<'_> {
                                 stream
                                     .set_nonblocking(false)
                                     .expect("accepted stream must blocking");
-                                let process_result = self.tcp_process.process(stream, &addr);
-                                match process_result {
-                                    Ok((r, w)) => log::info!("{} r:{} o:{}", addr, r, w),
-                                    Err(err) => log::warn!("process failed {:?}", err),
-                                }
+                                let process_result: Result<ProcessResult, crate::server::Error> =
+                                    self.tcp_process.process(&stream, &addr);
+                                let keep_alive = match process_result {
+                                    Ok(res) => {
+                                        log::info!("{} r:{} o:{}", addr, res.readed, res.written);
+                                        res.keep_alive
+                                    }
+                                    Err(err) => {
+                                        log::warn!("process failed {:?}", err);
+                                        err.into()
+                                    }
+                                };
+                                match keep_alive {
+                                    KeepAlive::Close => {
+                                        log::trace!("{} closing", addr);
+                                        drop(stream)
+                                    }
+                                    KeepAlive::KeepAlive(_, _) => {
+                                        if let Err(e) = acceptor.register(stream) {
+                                            log::warn!("reregister failed {:?}", e);
+                                        }
+                                    }
+                                };
                             }
                             Accepted::Signal(signal_info) => {
                                 log::trace!(target: "TcpWorker::run", "Signal received {:?}", signal_info);
@@ -128,14 +147,28 @@ impl<'a> TcpWorker<'a> {
             timeout_ms,
             tcp_process,
             host,
+            keep_alive: KeepAlive::Close,
         };
     }
 }
 
+#[derive(Debug)]
+pub enum KeepAlive {
+    Close,
+    KeepAlive(u32, Duration),
+}
+
+#[derive(Debug)]
+pub struct ProcessResult {
+    pub readed: usize,
+    pub written: usize,
+    pub keep_alive: KeepAlive,
+}
+
 #[allow(dead_code)]
 pub trait Process {
-    fn process(&self, stream: TcpStream, client_addr: &SocketAddr)
-    -> Result<(usize, usize), Error>;
+    fn process(&self, stream: &TcpStream, client_addr: &SocketAddr)
+    -> Result<ProcessResult, Error>;
 
     fn name(&self) -> String {
         return "process".to_string();
@@ -154,7 +187,10 @@ mod test {
         net::SocketAddr,
     };
 
-    use crate::server::{Error, tcp::Process};
+    use crate::server::{
+        Error,
+        tcp::{KeepAlive, Process, ProcessResult},
+    };
 
     #[test]
     fn success() {
@@ -167,7 +203,7 @@ mod test {
 
         let t = std::thread::spawn(move || {
             let (stream, remote_addr) = listener.accept().unwrap();
-            process.process(stream, &remote_addr)
+            process.process(&stream, &remote_addr)
         });
 
         let mut client = std::net::TcpStream::connect(local_addr).unwrap();
@@ -184,9 +220,9 @@ mod test {
 
         drop(client);
 
-        let (readed, writed) = t.join().unwrap().unwrap();
-        assert_eq!(readed, 4);
-        assert_eq!(writed, 4);
+        let result = t.join().unwrap().unwrap();
+        assert_eq!(result.readed, 4);
+        assert_eq!(result.written, 4);
     }
 
     #[derive(Debug)]
@@ -198,9 +234,9 @@ mod test {
     impl Process for EchoProcess {
         fn process(
             &self,
-            mut stream: std::net::TcpStream,
+            mut stream: &std::net::TcpStream,
             client: &SocketAddr,
-        ) -> Result<(usize, usize), Error> {
+        ) -> Result<ProcessResult, Error> {
             let pid = nix::unistd::getpid();
             let mut all_readed = 0;
             let mut all_writed = 0;
@@ -252,7 +288,11 @@ mod test {
 
             log::info!(target:"access log", "{pid} {client} {all_readed} {all_writed}");
 
-            return Ok((all_readed, all_writed));
+            return Ok(ProcessResult {
+                readed: all_readed,
+                written: all_writed,
+                keep_alive: KeepAlive::Close,
+            });
         }
 
         fn name(&self) -> String {
