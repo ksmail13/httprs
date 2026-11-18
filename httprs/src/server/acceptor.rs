@@ -115,7 +115,11 @@ impl Acceptor for EpollAcceptor<'_> {
             &tcp_stream,
             EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLONESHOT, raw_fd),
         );
-        let _ = tcp_stream.into_raw_fd();
+        if res.is_ok() {
+            let _ = tcp_stream.into_raw_fd();
+        } else {
+            drop(tcp_stream);
+        }
         return res;
     }
 }
