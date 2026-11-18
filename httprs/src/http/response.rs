@@ -49,6 +49,10 @@ impl<'a> HttpResponse<'a> {
     pub fn written(&self) -> usize {
         self.written
     }
+
+    pub fn header(&self) -> &HttpResponseHeader {
+        &self.header
+    }
 }
 
 impl<'a> Write for HttpResponse<'a> {

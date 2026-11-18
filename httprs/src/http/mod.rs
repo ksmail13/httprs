@@ -160,9 +160,11 @@ where
         let path_query = req_line
             .next()
             .ok_or_else(|| Error::ParseFail(format!("invalid request line: {}", buf)))?;
-
-        // 1.1 구현 후 반영
-        let version = HttpVersion::default();
+        let version_str = req_line
+            .next()
+            .ok_or_else(|| Error::ParseFail(format!("invalid request line: {}", buf)))?;
+        let version = HttpVersion::parse(version_str)
+            .ok_or_else(|| Error::ParseFail(format!("invalid http version: {}", version_str)))?;
 
         let (path, param) = parse_url(path_query);
 
