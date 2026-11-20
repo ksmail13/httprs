@@ -193,6 +193,16 @@ pub fn www_authenticate(value: HttpHeaderValue) -> HttpHeader {
     from_str_key("WWW-Authenticate", value.to_value())
 }
 
+#[allow(dead_code)]
+pub fn connection(value: HttpHeaderValue) -> HttpHeader {
+    from_str_key("Connection", value.to_value())
+}
+
+#[allow(dead_code)]
+pub fn keep_alive(value: HttpHeaderValue) -> HttpHeader {
+    from_str_key("Keep-Alive", value.to_value())
+}
+
 #[derive(Debug)]
 pub struct HttpResponseHeader {
     defined: [Option<HttpHeader>; Self::HEADER_SIZE],
@@ -201,7 +211,7 @@ pub struct HttpResponseHeader {
 
 impl HttpResponseHeader {
     const HEADER_SIZE: usize = 16;
-    const HEADER_DEFINED_SIZE: usize = 10;
+    const HEADER_DEFINED_SIZE: usize = 12;
     const HEADER_LIST: [&'static str; Self::HEADER_SIZE] = [
         "Allow",
         "Content-Encoding",
@@ -213,8 +223,8 @@ impl HttpResponseHeader {
         "Location",
         "Server",
         "WWW-Authenticate", // http1.0
-        "",
-        "",
+        "Keep-Alive",
+        "Connection",
         "",
         "",
         "",

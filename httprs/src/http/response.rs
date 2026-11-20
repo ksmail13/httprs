@@ -80,6 +80,7 @@ impl<'a> Write for HttpResponse<'a> {
         let mut written = status_line.len();
 
         for i in self.header.into_iter() {
+            log::trace!("<< {}: {}", i.key_str(), i.value().to_str());
             buf_writer.write_all(i.key_str().as_bytes())?;
             buf_writer.write_all(KV_SEP.as_bytes())?;
             buf_writer.write_all(i.value().to_str().as_bytes())?;

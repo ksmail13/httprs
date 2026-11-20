@@ -9,7 +9,7 @@ use std::{
 use crate::{
     http::{
         handler::Handler,
-        header::{HttpHeaderValue, content_type, date, server},
+        header::{HttpHeaderValue, connection, content_type, date, server},
         request::HttpRequest,
         response::{HeaderSetter, HttpResponse},
         value::{Error, HttpMethod, HttpResponseCode, HttpVersion},
@@ -66,6 +66,8 @@ where
         response.set_header(server(HttpHeaderValue::Str("httprs")));
 
         self.handler.handle(&mut request, &mut response);
+
+        response.set_header(connection(HttpHeaderValue::Str("close")));
 
         response
             .flush()
@@ -163,6 +165,7 @@ where
         let version_str = req_line
             .next()
             .ok_or_else(|| Error::ParseFail(format!("invalid request line: {}", buf)))?;
+
         let version = HttpVersion::parse(version_str)
             .ok_or_else(|| Error::ParseFail(format!("invalid http version: {}", version_str)))?;
 

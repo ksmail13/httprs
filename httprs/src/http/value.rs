@@ -4,6 +4,7 @@ use std::{
     net::SocketAddr,
 };
 
+#[derive(PartialEq)]
 pub enum HttpVersion {
     Http10,
     Http11,
